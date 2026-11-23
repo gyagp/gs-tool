@@ -10,7 +10,7 @@
  */
 
 import { CaptureSlot } from '../capture/coverage';
-import { extractForeground } from '../capture/foreground';
+import { extractForeground, foregroundFromMask } from '../capture/foreground';
 import {
   computeMortonOrder,
   mat4LookAt,
@@ -55,7 +55,9 @@ export class ReconstructionError extends Error {
 
 function prepareReconstructionPixels(slot: CaptureSlot) {
   const photo = slot.photo!;
-  const foreground = extractForeground(photo.rgba, photo.workWidth, photo.workHeight);
+  const foreground = photo.foregroundMask?.length === photo.workWidth * photo.workHeight
+    ? foregroundFromMask(photo.foregroundMask, photo.workWidth, photo.workHeight)
+    : extractForeground(photo.rgba, photo.workWidth, photo.workHeight);
   if (!foreground.usable || !foreground.bounds) throw new ReconstructionError('foreground');
   if (photo.source === 'demo') {
     return { width: photo.workWidth, height: photo.workHeight, rgba: photo.rgba, fgMask: foreground.mask };
@@ -64,17 +66,38 @@ function prepareReconstructionPixels(slot: CaptureSlot) {
   // Phone framing is not calibrated to the demo's fixed camera distance. Fit the observed
   // subject inside the reconstruction volume instead of letting it fill/clamp the entire cube.
   const size = 384;
-  const { x, y, width, height } = foreground.bounds;
-  const scale = size * 0.46 / Math.max(width, height);
-  const cx = x + width / 2, cy = y + height / 2;
+  // Rectify the observed silhouette's principal axis before fitting camera framing.
+  // This removes camera roll; camera elevation and azimuth still remain assumptions.
+  let count = 0, cx = 0, cy = 0;
+  for (let i = 0; i < foreground.mask.length; i++) if (foreground.mask[i]) {
+    count++; cx += i % photo.workWidth; cy += Math.floor(i / photo.workWidth);
+  }
+  cx /= count; cy /= count;
+  let xx = 0, yy = 0, xy = 0;
+  for (let i = 0; i < foreground.mask.length; i++) if (foreground.mask[i]) {
+    const dx = i % photo.workWidth - cx, dy = Math.floor(i / photo.workWidth) - cy;
+    xx += dx * dx; yy += dy * dy; xy += dx * dy;
+  }
+  const angle = yy > xx * 1.8 ? .5 * Math.atan2(2 * xy, yy - xx) : 0;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+  for (let i = 0; i < foreground.mask.length; i++) if (foreground.mask[i]) {
+    const dx = i % photo.workWidth - cx, dy = Math.floor(i / photo.workWidth) - cy;
+    const u = dx * cos - dy * sin, v = dx * sin + dy * cos;
+    left = Math.min(left, u); right = Math.max(right, u);
+    top = Math.min(top, v); bottom = Math.max(bottom, v);
+  }
+  const scale = size * 0.46 / Math.max(right - left + 1, bottom - top + 1);
+  const uc = (left + right) / 2, vc = (top + bottom) / 2;
   const rgba = new Uint8ClampedArray(size * size * 4);
   const fgMask = new Uint8Array(size * size);
   for (let py = 0; py < size; py++) {
-    const sy = Math.floor((py + 0.5 - size / 2) / scale + cy);
-    if (sy < 0 || sy >= photo.workHeight) continue;
     for (let px = 0; px < size; px++) {
-      const sx = Math.floor((px + 0.5 - size / 2) / scale + cx);
-      if (sx < 0 || sx >= photo.workWidth) continue;
+      const u = (px + .5 - size / 2) / scale + uc;
+      const v = (py + .5 - size / 2) / scale + vc;
+      const sx = Math.round(cx + u * cos + v * sin);
+      const sy = Math.round(cy - u * sin + v * cos);
+      if (sx < 0 || sx >= photo.workWidth || sy < 0 || sy >= photo.workHeight) continue;
       const source = sy * photo.workWidth + sx;
       const target = py * size + px;
       fgMask[target] = foreground.mask[source];
@@ -84,7 +107,7 @@ function prepareReconstructionPixels(slot: CaptureSlot) {
   return { width: size, height: size, rgba, fgMask };
 }
 
-function normalToTangentQuat(nx: number, ny: number, nz: number): Quat {
+export function normalToTangentQuat(nx: number, ny: number, nz: number): Quat {
   // Align local Z-axis (thin pancake normal of Gaussian surfels) with surface normal n
   const [x, y, z] = vec3Normalize([nx, ny, nz]);
   if (z < -0.9999) {

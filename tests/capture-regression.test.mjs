@@ -10,7 +10,7 @@ const bundle = await build({
 });
 const api = await import(`data:text/javascript;base64,${Buffer.from(bundle.output[0].code).toString('base64')}`);
 const { extractForeground, getCaptureDimensions, CAPTURE_PRESETS, buildSlotsForPreset,
-  evaluateCoverage, reconstructSplatsFromCaptures, ReconstructionError, selectDistinctFrame } = api;
+  evaluateCoverage, reconstructSplatsFromCaptures, reconstructBottleFromCaptures, ReconstructionError, selectDistinctFrame } = api;
 
 function bottlePixels() {
   const width = 160, height = 288;
@@ -145,4 +145,29 @@ test('one view or views from only one side never become an extruded solid', asyn
   for (const views of [slots.slice(0, 1), slots.slice(0, 4).map((slot, i) => ({ ...slot, azimuthDeg: i * 20 }))]) {
     await assert.rejects(reconstructSplatsFromCaptures(views, 48, 'standard'), error => error instanceof ReconstructionError && error.code === 'views');
   }
+});
+
+test('round-bottle fitting preserves measured neck/body proportions and captured colors', async () => {
+  const photo = capturedBottleSlots()[0].photo;
+  const slots = buildSlotsForPreset(CAPTURE_PRESETS.video).map(slot => ({ ...slot, captured: true, photo: { ...photo } }));
+  const cloud = await reconstructBottleFromCaptures(slots);
+  assert.ok(cloud.count > 40000);
+  let neck = 0, body = 0;
+  for (let i = 0; i < cloud.count; i++) {
+    const [x,y,z] = cloud.positions.subarray(i*3,i*3+3);
+    assert.ok(Number.isFinite(x+y+z));
+    const radius = Math.hypot(x,z);
+    if (y>.45&&y<.52) neck=Math.max(neck,radius);
+    if (Math.abs(y)<.1) body=Math.max(body,radius);
+  }
+  assert.ok(neck>0&&neck<body*.65,JSON.stringify({neck,body}));
+  assert.ok(cloud.colors.some((v,i)=>i%4===0&&v>.9),'captured pale label survives');
+  await assert.rejects(reconstructBottleFromCaptures(slots.slice(0,1)),e=>e instanceof ReconstructionError&&e.code==='views');
+});
+
+test('reconstruction uses the inspected mask even when subject colors also occur in the background', async () => {
+  const slots = capturedBottleSlots().map(slot => ({ ...slot, photo: { ...slot.photo, rgba: new Uint8ClampedArray(slot.photo.rgba.length).fill(255) } }));
+  const cloud = await reconstructSplatsFromCaptures(slots,48,'standard');
+  assert.ok(cloud.count>100);
+  assert.ok(cloud.colors.every(v=>Number.isFinite(v)));
 });

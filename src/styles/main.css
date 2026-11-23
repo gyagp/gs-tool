@@ -263,6 +263,35 @@ body {
   flex-shrink: 0;
 }
 
+.bottle-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.bottle-mode-option input { margin-top: 3px; flex-shrink: 0; }
+
+.viewer-method {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  left: auto;
+  max-width: calc(100% - 20px);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: rgba(8, 12, 18, .86);
+  font-size: 11px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.viewer-method.hidden { display: none; }
+
 .btn:focus-visible,
 .mode-tab:focus-visible,
 summary:focus-visible {

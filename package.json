@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/capture-regression.test.mjs",
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "node scripts/prepare-inference.mjs && vite",
+    "build": "node scripts/prepare-inference.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler deploy"
   },
@@ -15,5 +15,8 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
     "wrangler": "^4.16.0"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.23.2"
   }
 }

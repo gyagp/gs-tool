@@ -66,18 +66,37 @@ export function extractForeground(rgba: Uint8ClampedArray, width: number, height
   };
   while (head < tail) neighbors(queue[head++], enqueueBackground);
 
+  for (let i = 0; i < total; i++) mask[i] = background[i] ? 0 : 255;
+  return foregroundFromMask(mask, width, height);
+}
+
+/** Validate an observed mask and retain its main component, without inventing a silhouette. */
+export function foregroundFromMask(input: Uint8Array, width: number, height: number): ForegroundResult {
+  const total = width * height;
+  if (input.length !== total) return { mask: new Uint8Array(total), bounds: null, usable: false };
+  const mask = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  let head = 0, tail = 0;
+  const neighbors = (index: number, visit: (neighbor: number) => void) => {
+    const x = index % width, y = Math.floor(index / width);
+    if (x > 0) visit(index - 1);
+    if (x + 1 < width) visit(index + 1);
+    if (y > 0) visit(index - width);
+    if (y + 1 < height) visit(index + width);
+  };
+
   // Small disconnected background patches should not become geometry around the bottle.
   const visited = new Uint8Array(total);
   let best: number[] = [], bestScore = 0;
   for (let i = 0; i < total; i++) {
-    if (background[i] || visited[i]) continue;
+    if (!input[i] || visited[i]) continue;
     head = 0; tail = 0; queue[tail++] = i; visited[i] = 1;
     let sumX = 0, sumY = 0;
     while (head < tail) {
       const index = queue[head++];
       sumX += index % width; sumY += Math.floor(index / width);
       neighbors(index, neighbor => {
-        if (!background[neighbor] && !visited[neighbor]) { visited[neighbor] = 1; queue[tail++] = neighbor; }
+        if (input[neighbor] && !visited[neighbor]) { visited[neighbor] = 1; queue[tail++] = neighbor; }
       });
     }
     const offset = Math.hypot(sumX / tail / width - 0.5, sumY / tail / height - 0.5);

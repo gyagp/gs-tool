@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  resolve: {
+    conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'development|production']
+  },
   build: {
     target: 'es2022',
     sourcemap: false,

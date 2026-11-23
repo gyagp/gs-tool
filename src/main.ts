@@ -11,7 +11,7 @@ import {
 } from './capture/coverage';
 import { CaptureDomeVisualizer } from './capture/domeVisualizer';
 import { renderSyntheticCaptureView } from './capture/syntheticSubject';
-import { extractForeground } from './capture/foreground';
+import { extractForeground, type ForegroundResult } from './capture/foreground';
 import { prepareCaptureImage } from './capture/photoProcessing';
 import { extractVideoFrames, VideoFrameError } from './capture/videoFrames';
 import {
@@ -23,6 +23,7 @@ import {
   UI_STRINGS
 } from './i18n/translations';
 import { packSplatsForGPU, ReconstructionError, reconstructSplatsFromCaptures, SplatCloudData } from './sfm/reconstruct';
+import { reconstructBottleFromCaptures } from './sfm/bottle';
 import { RenderMode, RendererStats, WebGPUSplatRenderer } from './webgpu/splatRenderer';
 import { exportToPlyBinary, exportToSplatBinary, importSplatFile } from './io/plySplatIo';
 
@@ -38,6 +39,8 @@ class GuidedGSplatApp {
   private cameraLive = false;
   private cameraStarting = false;
   private videoAbortController: AbortController | null = null;
+  private roundBottle = true;
+  private cloudMethod: 'bottle' | 'hull' | null = null;
 
   private domeVis!: CaptureDomeVisualizer;
   private renderer!: WebGPUSplatRenderer;
@@ -166,6 +169,7 @@ class GuidedGSplatApp {
               </div>
               <div class="preset-grid" id="preset-cards"></div>
               <p class="reconstruction-note" id="ui-reconstruction-note"></p>
+              <label class="bottle-mode-option"><input type="checkbox" id="input-round-bottle" checked /><span id="ui-round-bottle"></span></label>
             </div>
 
             <div class="panel-section">
@@ -294,6 +298,7 @@ class GuidedGSplatApp {
           <div class="splat-viewport-wrap">
             <canvas id="webgpu-canvas"></canvas>
             <div class="viewer-empty" id="viewer-empty"></div>
+            <div class="viewer-method hidden" id="viewer-method"></div>
 
             <div class="perf-hud">
               <div class="perf-hud-title" id="ui-hud-title"></div>
@@ -399,6 +404,11 @@ class GuidedGSplatApp {
   }
 
   private bindEvents(): void {
+    document.getElementById('input-round-bottle')!.addEventListener('change', event => {
+      this.roundBottle = (event.target as HTMLInputElement).checked;
+      this.invalidateCloud();
+      this.refreshAllUI();
+    });
     const compactLayout = window.matchMedia('(max-width: 1024px)');
     const updateDetails = () => {
       document.querySelectorAll<HTMLDetailsElement>('.responsive-details').forEach((details) => {
@@ -663,6 +673,10 @@ class GuidedGSplatApp {
     document.getElementById('btn-preview-captures')!.textContent = s.btnPreviewCaptures;
     document.getElementById('btn-add-detail')!.textContent = s.btnAddDetail;
     document.getElementById('ui-reconstruction-note')!.textContent = s.reconstructionNote;
+    document.getElementById('ui-round-bottle')!.textContent = s.roundBottleOption;
+    const method = document.getElementById('viewer-method')!;
+    method.textContent = this.cloudMethod === 'bottle' ? s.roundBottleResult : s.hullResult;
+    method.classList.toggle('hidden', !this.currentCloud || !this.cloudMethod);
     document.getElementById('ui-foreground-title')!.textContent = s.foregroundTitle;
     document.getElementById('ui-foreground-hint')!.textContent = s.foregroundHint;
     const emptyViewer = document.getElementById('viewer-empty')!;
@@ -1001,6 +1015,7 @@ class GuidedGSplatApp {
 
   private invalidateCloud(): void {
     this.currentCloud = null;
+    this.cloudMethod = null;
     this.latestStats = null;
     this.renderer.clearSplatCloud();
   }
@@ -1105,18 +1120,18 @@ class GuidedGSplatApp {
     const cancelButton = document.getElementById('btn-cancel-video') as HTMLButtonElement;
     cancelButton.hidden = false;
     this.setCameraFeedback('');
-    this.setBusy(true, this.t().videoBusyTitle, '0 / 48', 0);
+    this.setBusy(true, this.t().videoBusyTitle, this.t().videoLocalModelHint, 0);
     try {
       const result = await extractVideoFrames(file, controller.signal, (completed, total) => {
-        this.setBusy(true, this.t().videoBusyTitle, `${completed} / ${total}`, Math.round(completed / total * 100));
-      });
+        this.setBusy(true, this.t().videoBusyTitle, `${completed} / ${total} · ${this.t().videoLocalModelHint}`, Math.round(completed / total * 100));
+      }, this.roundBottle);
       if (controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       this.presetId = 'video';
       this.slots = buildSlotsForPreset(CAPTURE_PRESETS.video);
       this.lastCapturedSlotIdx = null;
       for (const frame of result.frames) {
         const { image } = frame;
-        if (this.storeCaptureInSlot(frame.bin, image.rgba, image.width, image.height, image.dataUrl)) {
+        if (this.storeCaptureInSlot(frame.bin, image.rgba, image.width, image.height, image.dataUrl, 'real', frame.foreground)) {
           this.slots[frame.bin].photo!.videoTimeSeconds = frame.time;
         }
       }
@@ -1132,6 +1147,7 @@ class GuidedGSplatApp {
       this.setCameraFeedback(controller.signal.aborted ? this.t().videoCancelled
         : error instanceof VideoFrameError && error.code === 'duration' ? this.t().videoDurationError
         : error instanceof VideoFrameError && error.code === 'no_frames' ? this.t().videoNoFrames
+        : error instanceof VideoFrameError && error.code === 'model' ? this.t().videoModelError
         : this.t().videoDecodeError);
     } finally {
       cancelButton.hidden = true;
@@ -1165,7 +1181,8 @@ class GuidedGSplatApp {
     w: number,
     h: number,
     dataUrl: string,
-    source: CapturedPhoto['source'] = 'real'
+    source: CapturedPhoto['source'] = 'real',
+    observedForeground?: ForegroundResult
   ): boolean {
     if (!this.canCapture(source)) return false;
     const prevPhoto =
@@ -1174,7 +1191,7 @@ class GuidedGSplatApp {
         : null;
 
     const qc = inspectCapturedPhoto(rgba, w, h, prevPhoto);
-    const foreground = extractForeground(rgba, w, h);
+    const foreground = observedForeground ?? extractForeground(rgba, w, h);
     if (!foreground.usable && source === 'real') {
       const message = { zh: UI_STRINGS.zh.backgroundUnclear, en: UI_STRINGS.en.backgroundUnclear };
       qc.issues.push({ code: 'background', severity: 'bad', message });
@@ -1332,7 +1349,9 @@ class GuidedGSplatApp {
     this.invalidateCloud();
     this.refreshStaticTexts();
     try {
-      const cloud = await reconstructSplatsFromCaptures(
+      const useBottle = this.roundBottle && this.presetId === 'video' && this.slots.some(slot => slot.photo?.source === 'real');
+      const progress = (stage: string, pct: number) => this.setBusy(true, s.busyReconTitle, stage, pct);
+      const cloud = useBottle ? await reconstructBottleFromCaptures(this.slots, progress) : await reconstructSplatsFromCaptures(
         this.slots,
         preset.recommendedFovDeg,
         'high',
@@ -1340,7 +1359,7 @@ class GuidedGSplatApp {
           this.setBusy(true, s.busyReconTitle, stage, pct);
         }
       );
-      this.loadCloudIntoViewer(cloud);
+      this.loadCloudIntoViewer(cloud, useBottle ? 'bottle' : 'hull');
     } catch (error) {
       this.setCameraFeedback(error instanceof ReconstructionError && error.code === 'foreground'
         ? s.backgroundUnclear : error instanceof ReconstructionError && error.code === 'views'
@@ -1353,8 +1372,9 @@ class GuidedGSplatApp {
     }
   }
 
-  private loadCloudIntoViewer(cloud: SplatCloudData): void {
+  private loadCloudIntoViewer(cloud: SplatCloudData, method: 'bottle' | 'hull' | null = null): void {
     this.currentCloud = cloud;
+    this.cloudMethod = method;
     this.renderer.setSplatCloud(cloud);
     this.renderer.autoTurntable = true;
     this.refreshStaticTexts();
