@@ -33,6 +33,7 @@ class GuidedGSplatApp {
 
   private stream: MediaStream | null = null;
   private cameraLive = false;
+  private cameraStarting = false;
 
   private domeVis!: CaptureDomeVisualizer;
   private renderer!: WebGPUSplatRenderer;
@@ -100,17 +101,20 @@ class GuidedGSplatApp {
           </div>
           <div>
             <div class="brand-title" id="ui-app-title"></div>
+            <div class="brand-title mobile-only" id="ui-app-title-compact"></div>
             <div class="brand-sub" id="ui-app-sub"></div>
           </div>
         </div>
 
         <nav class="mode-tabs" role="tablist">
           <button class="mode-tab active" id="tab-capture" data-tab="capture">
-            <span id="ui-tab-step1"></span>
+            <span class="desktop-only" id="ui-tab-step1"></span>
+            <span class="mobile-only" id="ui-tab-capture-short"></span>
             <span class="tab-badge" id="badge-capture-count">0 / 28</span>
           </button>
           <button class="mode-tab" id="tab-render" data-tab="render">
-            <span id="ui-tab-step2"></span>
+            <span class="desktop-only" id="ui-tab-step2"></span>
+            <span class="mobile-only" id="ui-tab-render-short"></span>
             <span class="tab-badge" id="badge-splat-count">0</span>
           </button>
         </nav>
@@ -127,7 +131,8 @@ class GuidedGSplatApp {
           </div>
 
           <label class="btn">
-            <span id="ui-import-btn"></span>
+            <span class="desktop-only" id="ui-import-btn"></span>
+            <span class="mobile-only" id="ui-import-short"></span>
             <input type="file" id="input-import-splat" accept=".ply,.splat" hidden />
           </label>
         </div>
@@ -138,6 +143,8 @@ class GuidedGSplatApp {
         <section id="capture-stage" class="stage-view active">
           <!-- Left Column: Preset + Missing Directions Checklist + Generate Button -->
           <aside class="panel">
+            <details class="responsive-details" id="capture-settings" open>
+              <summary><span id="ui-capture-settings"></span><span class="tab-badge" id="settings-capture-count"></span></summary>
             <div class="panel-section">
               <div class="demo-banner">
                 <div class="demo-banner-title" id="ui-demo-title"></div>
@@ -145,6 +152,7 @@ class GuidedGSplatApp {
                 <button class="btn btn-amber" id="btn-synth-all" style="width:100%;">
                   <span id="ui-demo-btn"></span>
                 </button>
+                <button class="btn" id="btn-simulate-shot" style="width:100%; margin-top:8px;"></button>
               </div>
             </div>
 
@@ -175,6 +183,7 @@ class GuidedGSplatApp {
               <button class="btn btn-primary" id="btn-reconstruct" style="width:100%; padding:11px 14px; font-size:13.5px;"></button>
               <div style="margin-top:7px; font-size:11.5px; color:var(--text-secondary); text-align:center;" id="ui-generate-hint"></div>
             </div>
+            </details>
           </aside>
 
           <!-- Center Column: Step-by-Step Coach + Viewfinder + Instant Shot Quality Inspector + Filmstrip -->
@@ -187,6 +196,7 @@ class GuidedGSplatApp {
               </div>
               <div style="text-align:right; font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);" id="coach-counter"></div>
             </div>
+            <p class="camera-feedback hidden" id="camera-feedback" role="status" aria-live="polite"></p>
 
             <div class="viewfinder-stage">
               <video id="camera-video" class="hidden" autoplay playsinline muted></video>
@@ -197,18 +207,22 @@ class GuidedGSplatApp {
 
             <div class="shutter-bar">
               <div class="shutter-group">
-                <button class="btn" id="btn-toggle-webcam"></button>
+                <label class="btn" id="native-camera-label">
+                  <span id="ui-native-camera"></span>
+                  <input type="file" id="input-camera-photo" accept="image/*" capture="environment" hidden />
+                </label>
                 <button class="btn btn-primary btn-shutter-big" id="btn-shutter"></button>
                 <label class="btn">
                   <span id="ui-upload-btn"></span>
                   <input type="file" id="input-upload-photos" accept="image/*" multiple hidden />
                 </label>
               </div>
-              <div class="shutter-group">
-                <button class="btn" id="btn-clear-captures"></button>
-              </div>
             </div>
 
+            <div class="capture-tools">
+              <button class="btn" id="btn-toggle-webcam"></button>
+              <button class="btn" id="btn-clear-captures"></button>
+            </div>
             <!-- Real-time Newly Captured Photo Quality Inspector -->
             <div class="qc-card" id="qc-card">
               <div class="qc-left">
@@ -229,6 +243,8 @@ class GuidedGSplatApp {
 
           <!-- Right Column: 3D Capture Dome + Beginner Tips -->
           <aside class="panel">
+            <details class="responsive-details" id="capture-help" open>
+              <summary><span id="ui-capture-help"></span></summary>
             <div class="panel-section" style="padding-bottom:8px;">
               <div class="section-header" style="margin-bottom:3px;">
                 <span class="section-title" id="ui-dome-title"></span>
@@ -247,6 +263,7 @@ class GuidedGSplatApp {
               </div>
               <ul class="tips-list" id="ui-tips-list"></ul>
             </div>
+            </details>
           </aside>
         </section>
 
@@ -358,6 +375,17 @@ class GuidedGSplatApp {
   }
 
   private bindEvents(): void {
+    const compactLayout = window.matchMedia('(max-width: 1024px)');
+    const updateDetails = () => {
+      document.querySelectorAll<HTMLDetailsElement>('.responsive-details').forEach((details) => {
+        details.open = !compactLayout.matches;
+      });
+      this.domeVis.render();
+    };
+    updateDetails();
+    compactLayout.addEventListener('change', updateDetails);
+    document.getElementById('capture-help')!.addEventListener('toggle', () => this.domeVis.render());
+
     // Language switcher
     document.querySelectorAll('.lang-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -386,8 +414,12 @@ class GuidedGSplatApp {
       if (this.cameraLive) {
         this.captureFromWebcam();
       } else {
-        this.captureSyntheticAt(this.selectedSlotIdx, true);
+        void this.toggleWebcam();
       }
+    });
+
+    document.getElementById('btn-simulate-shot')!.addEventListener('click', () => {
+      this.captureSyntheticAt(this.selectedSlotIdx, true);
     });
 
     // Retake last photo button
@@ -407,12 +439,20 @@ class GuidedGSplatApp {
     });
 
     // Upload photos
-    const uploadInput = document.getElementById('input-upload-photos') as HTMLInputElement;
-    uploadInput.addEventListener('change', async () => {
-      if (!uploadInput.files || uploadInput.files.length === 0) return;
-      await this.handleUploadedPhotos(Array.from(uploadInput.files));
-      uploadInput.value = '';
-    });
+    for (const id of ['input-upload-photos', 'input-camera-photo']) {
+      const uploadInput = document.getElementById(id) as HTMLInputElement;
+      uploadInput.addEventListener('change', async () => {
+        if (!uploadInput.files?.length) return;
+        try {
+          await this.handleUploadedPhotos(Array.from(uploadInput.files));
+          this.setCameraFeedback('');
+        } catch {
+          this.setCameraFeedback(this.t().photoReadError);
+        } finally {
+          uploadInput.value = '';
+        }
+      });
+    }
 
     // 1-Click Full Demo
     document.getElementById('btn-synth-all')!.addEventListener('click', async () => {
@@ -554,10 +594,16 @@ class GuidedGSplatApp {
     document.getElementById('lang-en')!.classList.toggle('active', this.locale === 'en');
 
     document.getElementById('ui-app-title')!.textContent = s.appTitle;
+    document.getElementById('ui-app-title-compact')!.textContent = s.appTitleCompact;
     document.getElementById('ui-app-sub')!.textContent = s.appSubtitle;
     document.getElementById('ui-tab-step1')!.textContent = s.step1Tab;
     document.getElementById('ui-tab-step2')!.textContent = s.step2Tab;
+    document.getElementById('ui-tab-capture-short')!.textContent = s.captureTabShort;
+    document.getElementById('ui-tab-render-short')!.textContent = s.renderTabShort;
     document.getElementById('ui-import-btn')!.textContent = s.importBtn;
+    document.getElementById('ui-import-short')!.textContent = s.importShort;
+    document.getElementById('ui-capture-settings')!.textContent = s.captureSettings;
+    document.getElementById('ui-capture-help')!.textContent = s.captureHelp;
 
     const gpuDot = document.getElementById('gpu-status-dot')!;
     const gpuText = document.getElementById('gpu-status-text')!;
@@ -575,7 +621,12 @@ class GuidedGSplatApp {
 
     document.getElementById('ui-framing-tip')!.textContent = s.framingTip;
     document.getElementById('btn-toggle-webcam')!.textContent = this.cameraLive ? s.btnStopCam : s.btnStartCam;
-    document.getElementById('btn-shutter')!.textContent = this.cameraLive ? s.btnShutterLive : s.btnShutterSim;
+    const shutter = document.getElementById('btn-shutter') as HTMLButtonElement;
+    shutter.textContent = this.cameraStarting ? s.btnCameraStarting : this.cameraLive ? s.btnShutterLive : s.btnShutterReady;
+    shutter.disabled = this.cameraStarting;
+    (document.getElementById('btn-toggle-webcam') as HTMLButtonElement).disabled = this.cameraStarting;
+    document.getElementById('btn-simulate-shot')!.textContent = s.btnShutterSim;
+    document.getElementById('ui-native-camera')!.textContent = s.btnNativeCamera;
     document.getElementById('ui-upload-btn')!.textContent = s.btnUploadPhotos;
     document.getElementById('btn-clear-captures')!.textContent = s.btnResetAll;
     document.getElementById('btn-retake-last')!.textContent = s.qcRetakeBtn;
@@ -642,6 +693,7 @@ class GuidedGSplatApp {
 
     // Top capture count badge
     document.getElementById('badge-capture-count')!.textContent = `${report.capturedCount} / ${report.requiredCount}`;
+    document.getElementById('settings-capture-count')!.textContent = `${report.capturedCount} / ${report.requiredCount}`;
 
     // 1. Preset Cards
     const presetContainer = document.getElementById('preset-cards')!;
@@ -860,14 +912,23 @@ class GuidedGSplatApp {
     document.getElementById('stat-vram')!.textContent = `${st.vramMB} MB`;
   }
 
+  private setCameraFeedback(message: string): void {
+    const feedback = document.getElementById('camera-feedback')!;
+    feedback.textContent = message;
+    feedback.classList.toggle('hidden', !message);
+  }
+
   private async toggleWebcam(): Promise<void> {
+    if (this.cameraStarting) return;
     const video = document.getElementById('camera-video') as HTMLVideoElement;
     const previewCanvas = document.getElementById('preview-photo-canvas') as HTMLCanvasElement;
 
     if (this.cameraLive) {
       this.stream?.getTracks().forEach((t) => t.stop());
       this.stream = null;
+      video.srcObject = null;
       this.cameraLive = false;
+      this.setCameraFeedback('');
       video.classList.add('hidden');
       previewCanvas.classList.remove('hidden');
       this.refreshAllUI();
@@ -875,6 +936,16 @@ class GuidedGSplatApp {
       return;
     }
 
+    // Keep the native camera picker available on phones without live camera support.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      this.setCameraFeedback(this.t().cameraUnavailable);
+      (document.getElementById('input-camera-photo') as HTMLInputElement).click();
+      return;
+    }
+
+    this.cameraStarting = true;
+    this.setCameraFeedback('');
+    this.refreshStaticTexts();
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } },
@@ -885,13 +956,14 @@ class GuidedGSplatApp {
       this.cameraLive = true;
       video.classList.remove('hidden');
       previewCanvas.classList.add('hidden');
+    } catch {
+      this.stream?.getTracks().forEach((track) => track.stop());
+      this.stream = null;
+      video.srcObject = null;
+      this.setCameraFeedback(this.t().cameraUnavailable);
+    } finally {
+      this.cameraStarting = false;
       this.refreshAllUI();
-    } catch (err) {
-      const msg =
-        this.locale === 'zh'
-          ? `未检测到可用摄像头（${(err as Error).message}）。您可以直接上传手机照片，或点击“模拟拍下此角度 / 一键演示”体验完整流程！`
-          : `Camera unavailable (${(err as Error).message}). You can upload photos from your phone or use Simulate / 1-Click Demo!`;
-      alert(msg);
     }
   }
 

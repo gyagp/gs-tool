@@ -16,7 +16,14 @@ A bilingual (**中文 / English**), responsive web toolkit for **3D Gaussian Spl
 - **Human-Friendly Instructions**: Converts raw azimuth/elevation degrees into intuitive **clock-face positions** (e.g., *6 o'clock Front*, *3 o'clock Right*) and camera tilt directions.
 - **Missing-Angle Compass Checklist**: Real-time 8-direction + overhead (>30°) coverage tracker showing exactly which sectors are covered and which are still missing.
 - **Instant Photo Quality Inspector**: Evaluates every new shot for **Sharpness** (Laplacian focus score), **Exposure**, **Subject Framing/Centering**, and **Duplicate Angle Similarity**, telling you immediately if a shot is good or needs a one-tap retake.
-- **Responsive Multi-Device Layout**: Adapts seamlessly across mobile phones (375px+ with pinch-zoom & two-finger pan), tablets, laptops, and 4K monitors.
+- **Responsive Multi-Device Layout**: Adapts across mobile phones (320px+ with pinch-zoom & two-finger pan), tablets, laptops, and 4K monitors.
+
+### Mobile Capture / 手机拍摄
+
+- The mobile capture page keeps the viewfinder first and the capture controls fixed above the phone's bottom safe area. Settings, coverage, and shooting tips expand on demand.
+- Tap **开启相机拍摄 / Open Camera**, allow camera access, then tap **拍下当前角度 / Take Photo** for each guided angle. Live preview requires HTTPS (or localhost).
+- **系统相机拍照 / System Camera** opens the phone's native camera picker where supported; **从相册添加 / Add Photos** imports existing photos. Browsers decide whether to offer a camera or file picker.
+- Simulated photos are available separately in **拍摄设置与覆盖进度 / Capture Settings & Coverage**.
 
 ### 2. PlayCanvas-Class WebGPU 3DGS Engine (高性能 WebGPU 渲染引擎)
 - **30-bit Morton Z-Order Spatial Sorting** for coherent GPU cache reads.
