@@ -7,7 +7,7 @@
 import { sphericalToCartesian, Vec3 } from '../math/mat4';
 import { Locale, OCTANT_LABELS } from '../i18n/translations';
 
-export type CapturePresetId = 'express' | 'standard' | 'studio';
+export type CapturePresetId = 'minimal' | 'express' | 'standard' | 'studio';
 export type ShotVerdict = 'good' | 'warn' | 'bad';
 
 export interface RingSpec {
@@ -15,6 +15,7 @@ export interface RingSpec {
   label: Record<Locale, string>;
   elevationDeg: number;
   count: number;
+  phaseOffsetDeg?: number;
   purpose: Record<Locale, string>;
 }
 
@@ -25,7 +26,7 @@ export interface CapturePreset {
   totalPhotos: number;
   recommendedFovDeg: number;
   angularStepDeg: number;
-  estimatedOverlapPct: number;
+  estimatedOverlapPct?: number;
   rings: RingSpec[];
   useCase: Record<Locale, string>;
 }
@@ -103,23 +104,59 @@ export interface CoverageReport {
 }
 
 export const CAPTURE_PRESETS: Record<CapturePresetId, CapturePreset> = {
+  minimal: {
+    id: 'minimal',
+    name: { zh: '8 张极速预览（默认）', en: '8-Shot Preview (Default)' },
+    badge: { zh: '8 张 · 2 圈', en: '8 Photos · 2 Rings' },
+    totalPhotos: 8,
+    recommendedFovDeg: 48,
+    angularStepDeg: 90,
+    useCase: {
+      zh: '先拍前后左右 4 张，再举高俯拍 4 张。适合简单物体的粗略预览；细节不足可保留照片补拍至 16 张。',
+      en: '4 side views + 4 raised views for a rough preview of simple objects. Keep these photos and add 8 more if needed.'
+    },
+    rings: [
+      {
+        id: 'equator',
+        label: { zh: '第 1 圈：前后左右 (+12°)', en: 'Ring 1: Four Sides (+12°)' },
+        elevationDeg: 12,
+        count: 4,
+        purpose: {
+          zh: '在物体正前、右侧、正后、左侧各拍一张，先记录整体轮廓。',
+          en: 'One photo each from the front, right, back, and left for the overall silhouette.'
+        }
+      },
+      {
+        id: 'upper',
+        label: { zh: '第 2 圈：四个俯拍角度 (+45°)', en: 'Ring 2: Four Raised Views (+45°)' },
+        elevationDeg: 45,
+        count: 4,
+        // A subset of the 16/28-shot upper ring, so these captures can be reused.
+        phaseOffsetDeg: 22.5,
+        purpose: {
+          zh: '举高手机，按引导从四个斜向角度俯拍，补充顶面信息。',
+          en: 'Raise the phone and follow four offset angles to include the top surface.'
+        }
+      }
+    ]
+  },
   express: {
     id: 'express',
     name: { zh: '快速尝鲜模式', en: 'Quick Scan' },
     badge: { zh: '16 张 · 2 圈', en: '16 Photos · 2 Rings' },
     totalPhotos: 16,
-    recommendedFovDeg: 50,
+    recommendedFovDeg: 48,
     angularStepDeg: 45,
     estimatedOverlapPct: 68,
     useCase: {
-      zh: '适合形状简单的桌面小物件（水杯、手办、玩偶），2 分钟快速出 3D 预览',
-      en: 'Fast 2-minute scan for simple tabletop objects (mugs, figurines, toys)'
+      zh: '比 8 张方案补充更多侧面和顶面角度；从 8 张升级时只需再拍 8 张。',
+      en: 'More side and top views. Upgrading from 8-Shot Preview keeps all 8 photos; take only 8 more.'
     },
     rings: [
       {
         id: 'equator',
-        label: { zh: '第 1 圈：水平平视圈 (+10°)', en: 'Ring 1: Eye-Level (+10°)' },
-        elevationDeg: 10,
+        label: { zh: '第 1 圈：水平平视圈 (+12°)', en: 'Ring 1: Eye-Level (+12°)' },
+        elevationDeg: 12,
         count: 8,
         purpose: {
           zh: '每隔 45° 拍一张，快速勾勒物体四周一圈的轮廓与表面颜色',
@@ -128,8 +165,8 @@ export const CAPTURE_PRESETS: Record<CapturePresetId, CapturePreset> = {
       },
       {
         id: 'upper',
-        label: { zh: '第 2 圈：斜向下俯拍圈 (+38°)', en: 'Ring 2: High Oblique (+38°)' },
-        elevationDeg: 38,
+        label: { zh: '第 2 圈：斜向下俯拍圈 (+45°)', en: 'Ring 2: High Oblique (+45°)' },
+        elevationDeg: 45,
         count: 8,
         purpose: {
           zh: '举高手机斜向下拍，补全物体顶面细节并提供上下视差',
@@ -140,7 +177,7 @@ export const CAPTURE_PRESETS: Record<CapturePresetId, CapturePreset> = {
   },
   standard: {
     id: 'standard',
-    name: { zh: '标准推荐模式', en: 'Balanced 3DGS (Recommended)' },
+    name: { zh: '28 张完整覆盖', en: '28-Shot Full Coverage' },
     badge: { zh: '28 张 · 3 圈', en: '28 Photos · 3 Rings' },
     totalPhotos: 28,
     recommendedFovDeg: 48,
@@ -246,23 +283,29 @@ export function getRingSpec(preset: CapturePreset, ringId: string): RingSpec {
   return preset.rings.find((r) => r.id === ringId) || preset.rings[0];
 }
 
-export function buildSlotsForPreset(preset: CapturePreset): CaptureSlot[] {
+export function buildSlotsForPreset(preset: CapturePreset, previousSlots: readonly CaptureSlot[] = []): CaptureSlot[] {
   const slots: CaptureSlot[] = [];
   let idx = 0;
 
   for (let r = 0; r < preset.rings.length; r++) {
     const ring = preset.rings[r];
-    const phaseOffset = (r % 2) * (180 / ring.count);
+    const phaseOffset = ring.phaseOffsetDeg ?? (r % 2) * (180 / ring.count);
     for (let i = 0; i < ring.count; i++) {
       const azimuthDeg = (i * (360 / ring.count) + phaseOffset) % 360;
       const position = sphericalToCartesian(azimuthDeg, ring.elevationDeg, CAPTURE_RADIUS);
+      const index = idx++;
+      const roundedAzimuth = Math.round(azimuthDeg * 10) / 10;
+      const previous = previousSlots.find((slot) =>
+        slot.captured && slot.photo && slot.azimuthDeg === roundedAzimuth && slot.elevationDeg === ring.elevationDeg
+      );
       slots.push({
-        index: idx++,
+        index,
         ringId: ring.id,
-        azimuthDeg: Math.round(azimuthDeg * 10) / 10,
+        azimuthDeg: roundedAzimuth,
         elevationDeg: ring.elevationDeg,
         position,
-        captured: false
+        captured: Boolean(previous),
+        photo: previous?.photo ? { ...previous.photo, slotIndex: index } : undefined
       });
     }
   }
@@ -579,12 +622,12 @@ export function evaluateCoverage(
   let missingSummaryText = '';
   if (locale === 'zh') {
     if (capturedCount === 0) {
-      missingSummaryText = `尚未开拍：共需围绕物体拍 ${requiredCount} 张（先平视走一圈，再举高俯拍一圈）。`;
+      missingSummaryText = `当前方案推荐 ${requiredCount} 张：按引导拍四周和顶部，可先预览，再按需补拍。`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
         warnOrBadCount > 0
           ? `全部 ${requiredCount} 个机位已拍完！其中有 ${warnOrBadCount} 张提示小瑕疵，可直接生成 3D 或点击黄框重拍。`
-          : `太棒了！全部 ${requiredCount} 个角度均已高质量拍齐，没有任何死角！`;
+          : `已拍齐 ${requiredCount} 个推荐角度！可先生成预览，细节不足时再补拍。`;
     } else {
       const parts: string[] = [];
       if (missingSectors.length > 0) {
@@ -605,12 +648,12 @@ export function evaluateCoverage(
     }
   } else {
     if (capturedCount === 0) {
-      missingSummaryText = `No photos yet: ${requiredCount} guided angles needed around the object.`;
+      missingSummaryText = `This plan recommends ${requiredCount} side and top views. Preview first, then add angles if needed.`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
         warnOrBadCount > 0
           ? `All ${requiredCount} stations captured (${warnOrBadCount} flagged with minor warnings). Ready to reconstruct!`
-          : `Perfect! All ${requiredCount} angles captured with zero blind spots!`;
+          : `All ${requiredCount} recommended angles captured! Preview now and add views if details need improvement.`;
     } else {
       const parts: string[] = [];
       if (missingSectors.length > 0) {

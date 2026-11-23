@@ -646,6 +646,29 @@ summary:focus-visible {
   display: none;
 }
 
+.capture-next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--accent-cyan-dim);
+  flex-shrink: 0;
+}
+
+.capture-next-actions.hidden,
+.capture-next-buttons [hidden] {
+  display: none;
+}
+
+.capture-next-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* Instant Photo Quality Inspector Card */
 .qc-card {
   margin: 8px 14px;

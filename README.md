@@ -10,8 +10,9 @@ A bilingual (**中文 / English**), responsive web toolkit for **3D Gaussian Spl
 
 ### 1. Step-by-Step Photo Coach & Instant Shot Quality Check (引导式环拍与实时照片质检)
 - **Clear Multi-Angle Presets**:
-  - **Quick Scan (16 Photos · 2 Rings)** — Fast tabletop scan.
-  - **Balanced 3DGS (28 Photos · 3 Rings)** — Recommended eye-level, 45° overhead, and low undercut rings (~78% view overlap).
+  - **8-Shot Preview (Default · 2 Rings)** — Four side views and four raised views for a rough preview of simple objects; 71% fewer photos than the previous 28-shot default. More views may be needed for complex shapes.
+  - **Quick Scan (16 Photos · 2 Rings)** — Add detail to the 8-shot plan, reusing all eight photos and taking only eight more.
+  - **28-Shot Full Coverage (3 Rings)** — Optional eye-level, 45° overhead, and low undercut rings (~78% view overlap).
   - **Dense Studio (48 Photos · 4 Rings)** — High-density capture for complex geometry.
 - **Human-Friendly Instructions**: Converts raw azimuth/elevation degrees into intuitive **clock-face positions** (e.g., *6 o'clock Front*, *3 o'clock Right*) and camera tilt directions.
 - **Missing-Angle Compass Checklist**: Real-time 8-direction + overhead (>30°) coverage tracker showing exactly which sectors are covered and which are still missing.
@@ -24,6 +25,7 @@ A bilingual (**中文 / English**), responsive web toolkit for **3D Gaussian Spl
 - Tap **开启相机拍摄 / Open Camera**, allow camera access, then tap **拍下当前角度 / Take Photo** for each guided angle. Live preview requires HTTPS (or localhost).
 - **系统相机拍照 / System Camera** opens the phone's native camera picker where supported; **从相册添加 / Add Photos** imports existing photos. Browsers decide whether to offer a camera or file picker.
 - Simulated photos are available separately in **拍摄设置与覆盖进度 / Capture Settings & Coverage**.
+- After the initial eight views, **查看 3D 预览 / View 3D Preview** is available above the viewfinder. **补拍至 16 张 / Add Detail to 16 Photos** keeps those eight captures. Other preset changes reuse matching camera angles when the field of view is the same; unmatched captures are not transferred.
 
 ### 2. PlayCanvas-Class WebGPU 3DGS Engine (高性能 WebGPU 渲染引擎)
 - **30-bit Morton Z-Order Spatial Sorting** for coherent GPU cache reads.

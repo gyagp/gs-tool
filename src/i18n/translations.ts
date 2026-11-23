@@ -79,6 +79,9 @@ export const UI_STRINGS = {
     importShort: '导入模型',
     captureSettings: '拍摄设置与覆盖进度',
     captureHelp: '机位球与拍摄技巧',
+    btnPreviewCaptures: '查看 3D 预览',
+    btnAddDetail: '补拍至 16 张',
+    previewReady: (count: number) => `已拍 ${count} 张，可先预览；细节不足再补拍。`,
     appSubtitle: '一步步引导拍摄 · 实时照片质检 · WebGPU 高速高斯泼溅渲染',
     step1Tab: '第 1 步：引导环拍采集',
     step2Tab: '第 2 步：WebGPU 3D 预览与导出',
@@ -99,12 +102,12 @@ export const UI_STRINGS = {
     ringProgressTitle: '各高度圈拍摄进度',
     generateBtnReady: '✨ 照片已达标！立即生成 WebGPU 3D 模型 →',
     generateBtnEarly: '生成 3D 预览（建议继续补齐缺失方位效果更好）',
-    generateHintMin: (min: number, cur: number) =>
+    generateHintMin: (min: number, cur: number, ready: boolean) =>
       cur === 0
-        ? `建议至少拍摄 ${min} 张不同角度照片（或点击上方“一键演示”）`
+        ? `先拍 ${min} 张起步，覆盖四周与顶部（也可用“一键演示”体验）`
         : cur < min
-          ? `再拍 ${min - cur} 张即可达到最低 3D 重建标准`
-          : '已满足重建基线！补齐全部点位可消除边缘噪点',
+          ? `建议再拍 ${min - cur} 张，并覆盖四周与顶部；也可先查看已拍照片的预览`
+          : ready ? '可以先生成预览，不必拍满更多机位；细节不足再按需补拍' : '张数已够起步，请优先补拍缺失方向与顶部',
 
     // Center column: Step-by-step coach & latest photo feedback
     nextActionBadge: '下一步拍摄指引',
@@ -201,6 +204,9 @@ export const UI_STRINGS = {
     importShort: 'Import',
     captureSettings: 'Capture Settings & Coverage',
     captureHelp: 'Camera Positions & Tips',
+    btnPreviewCaptures: 'View 3D Preview',
+    btnAddDetail: 'Add Detail to 16 Photos',
+    previewReady: (count: number) => `${count} photos captured. Preview first; add views if needed.`,
     appSubtitle: 'Step-by-Step Photo Coach · Instant Shot Quality Check · PlayCanvas-Class WebGPU',
     step1Tab: 'Step 1: Guided Photo Capture',
     step2Tab: 'Step 2: WebGPU 3D Viewer & Export',
@@ -220,12 +226,12 @@ export const UI_STRINGS = {
     ringProgressTitle: 'Elevation Ring Progress',
     generateBtnReady: '✨ Coverage Ready! Reconstruct 3D in WebGPU →',
     generateBtnEarly: 'Preview 3D Now (Capturing missing red sectors recommended)',
-    generateHintMin: (min: number, cur: number) =>
+    generateHintMin: (min: number, cur: number, ready: boolean) =>
       cur === 0
-        ? `Capture at least ${min} angles around your object (or click 1-Click Demo above)`
+        ? `Start with ${min} side and top views (or try the 1-Click Demo)`
         : cur < min
-          ? `Take ${min - cur} more photos to reach baseline 3D reconstruction quality`
-          : 'Baseline reached! Fill remaining angles for cleaner edges & zero floaters',
+          ? `${min - cur} more photos recommended, including side and top views. You can also preview now.`
+          : ready ? 'Preview now; further angles are optional if details need improvement.' : 'Enough photos to start; prioritize missing directions and top views.',
 
     nextActionBadge: 'NEXT SHOT INSTRUCTION',
     allDoneBadge: '🎉 ALL RECOMMENDED ANGLES CAPTURED!',

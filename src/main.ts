@@ -25,7 +25,7 @@ import { exportToPlyBinary, exportToSplatBinary, importSplatFile } from './io/pl
 
 class GuidedGSplatApp {
   private locale: Locale = detectInitialLocale();
-  private presetId: CapturePresetId = 'standard';
+  private presetId: CapturePresetId = 'minimal';
   private slots: CaptureSlot[] = [];
   private selectedSlotIdx = 0;
   private lastCapturedSlotIdx: number | null = null;
@@ -110,7 +110,7 @@ class GuidedGSplatApp {
           <button class="mode-tab active" id="tab-capture" data-tab="capture">
             <span class="desktop-only" id="ui-tab-step1"></span>
             <span class="mobile-only" id="ui-tab-capture-short"></span>
-            <span class="tab-badge" id="badge-capture-count">0 / 28</span>
+            <span class="tab-badge" id="badge-capture-count">0 / ${CAPTURE_PRESETS[this.presetId].totalPhotos}</span>
           </button>
           <button class="mode-tab" id="tab-render" data-tab="render">
             <span class="desktop-only" id="ui-tab-step2"></span>
@@ -195,6 +195,13 @@ class GuidedGSplatApp {
                 <div class="coach-sub-instruction" id="coach-height"></div>
               </div>
               <div style="text-align:right; font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);" id="coach-counter"></div>
+            </div>
+            <div class="capture-next-actions hidden" id="capture-next-actions" role="status">
+              <span id="ui-preview-ready"></span>
+              <div class="capture-next-buttons">
+                <button class="btn btn-primary" id="btn-preview-captures"></button>
+                <button class="btn" id="btn-add-detail"></button>
+              </div>
             </div>
             <p class="camera-feedback hidden" id="camera-feedback" role="status" aria-live="polite"></p>
 
@@ -472,6 +479,12 @@ class GuidedGSplatApp {
     document.getElementById('btn-reconstruct')!.addEventListener('click', async () => {
       await this.runReconstruction();
     });
+    document.getElementById('btn-preview-captures')!.addEventListener('click', async () => {
+      await this.runReconstruction();
+    });
+    document.getElementById('btn-add-detail')!.addEventListener('click', () => {
+      this.selectPreset('express');
+    });
 
     // Render Mode Buttons
     document.querySelectorAll('#render-mode-group .seg-btn').forEach((btn) => {
@@ -578,10 +591,13 @@ class GuidedGSplatApp {
 
   private selectPreset(id: CapturePresetId): void {
     if (id === this.presetId) return;
+    const compatibleFov = CAPTURE_PRESETS[this.presetId].recommendedFovDeg === CAPTURE_PRESETS[id].recommendedFovDeg;
+    const previousSlots = compatibleFov ? this.slots : [];
     this.presetId = id;
-    this.slots = buildSlotsForPreset(CAPTURE_PRESETS[id]);
-    this.selectedSlotIdx = 0;
-    this.lastCapturedSlotIdx = null;
+    this.slots = buildSlotsForPreset(CAPTURE_PRESETS[id], previousSlots);
+    this.selectedSlotIdx = this.slots.find((slot) => !slot.captured)?.index ?? 0;
+    const latest = this.slots.filter((slot) => slot.photo).sort((a, b) => b.photo!.timestamp - a.photo!.timestamp)[0];
+    this.lastCapturedSlotIdx = latest?.index ?? null;
     this.refreshAllUI();
     this.renderCurrentPreviewSlot();
   }
@@ -604,6 +620,8 @@ class GuidedGSplatApp {
     document.getElementById('ui-import-short')!.textContent = s.importShort;
     document.getElementById('ui-capture-settings')!.textContent = s.captureSettings;
     document.getElementById('ui-capture-help')!.textContent = s.captureHelp;
+    document.getElementById('btn-preview-captures')!.textContent = s.btnPreviewCaptures;
+    document.getElementById('btn-add-detail')!.textContent = s.btnAddDetail;
 
     const gpuDot = document.getElementById('gpu-status-dot')!;
     const gpuText = document.getElementById('gpu-status-text')!;
@@ -694,6 +712,9 @@ class GuidedGSplatApp {
     // Top capture count badge
     document.getElementById('badge-capture-count')!.textContent = `${report.capturedCount} / ${report.requiredCount}`;
     document.getElementById('settings-capture-count')!.textContent = `${report.capturedCount} / ${report.requiredCount}`;
+    document.getElementById('capture-next-actions')!.classList.toggle('hidden', !report.isReadyToRender);
+    document.getElementById('ui-preview-ready')!.textContent = s.previewReady(report.capturedCount);
+    (document.getElementById('btn-add-detail') as HTMLButtonElement).hidden = this.presetId !== 'minimal';
 
     // 1. Preset Cards
     const presetContainer = document.getElementById('preset-cards')!;
@@ -789,7 +810,8 @@ class GuidedGSplatApp {
     reconBtn.textContent = report.isReadyToRender ? s.generateBtnReady : s.generateBtnEarly;
     document.getElementById('ui-generate-hint')!.textContent = s.generateHintMin(
       report.minimumViableCount,
-      report.capturedCount
+      report.capturedCount,
+      report.isReadyToRender
     );
 
     // 4. Step-by-Step Coach Banner
