@@ -11,6 +11,8 @@
 
 import { CaptureSlot } from '../capture/coverage';
 import { extractForeground, foregroundFromMask } from '../capture/foreground';
+import type { TexturedSurfaceData } from './surface';
+import { sampleCaptureColor } from '../capture/colorSampling';
 import {
   computeMortonOrder,
   mat4LookAt,
@@ -25,6 +27,7 @@ import {
 } from '../math/mat4';
 
 export interface SplatCloudData {
+  surface?: TexturedSurfaceData;
   count: number;
   /** Packed 32 bytes (8 x u32) per splat for ultra-fast WebGPU storage reads */
   packedBuffer: Uint32Array;
@@ -38,6 +41,7 @@ export interface SplatCloudData {
 }
 
 interface PreparedCameraView {
+  sampleColor?: (x: number, y: number) => number[];
   vp: Float32Array;
   eye: Vec3;
   width: number;
@@ -104,7 +108,11 @@ function prepareReconstructionPixels(slot: CaptureSlot) {
       for (let channel = 0; channel < 4; channel++) rgba[target * 4 + channel] = photo.rgba[source * 4 + channel];
     }
   }
-  return { width: size, height: size, rgba, fgMask };
+  const sampleColor = photo.texture ? (px: number, py: number) => {
+    const u = (px + .5 - size / 2) / scale + uc, v = (py + .5 - size / 2) / scale + vc;
+    return sampleCaptureColor(photo, cx + u * cos + v * sin, cy - u * sin + v * cos);
+  } : undefined;
+  return { width: size, height: size, rgba, fgMask, sampleColor };
 }
 
 export function normalToTangentQuat(nx: number, ny: number, nz: number): Quat {
@@ -443,9 +451,10 @@ export async function reconstructSplatsFromCaptures(
       const pIdx = (py * cam.width + px) * 4;
 
       const weight = Math.pow(cosTheta, 3.2);
-      const cr = cam.rgba[pIdx] / 255;
-      const cg = cam.rgba[pIdx + 1] / 255;
-      const cb = cam.rgba[pIdx + 2] / 255;
+      const color = cam.sampleColor?.(px, py);
+      const cr = color?.[0] ?? cam.rgba[pIdx] / 255;
+      const cg = color?.[1] ?? cam.rgba[pIdx + 1] / 255;
+      const cb = color?.[2] ?? cam.rgba[pIdx + 2] / 255;
 
       rAcc += cr * weight;
       gAcc += cg * weight;

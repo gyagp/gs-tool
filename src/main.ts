@@ -40,6 +40,7 @@ class GuidedGSplatApp {
   private cameraStarting = false;
   private videoAbortController: AbortController | null = null;
   private roundBottle = true;
+  private videoDetail = true;
   private cloudMethod: 'bottle' | 'hull' | null = null;
 
   private domeVis!: CaptureDomeVisualizer;
@@ -169,7 +170,6 @@ class GuidedGSplatApp {
               </div>
               <div class="preset-grid" id="preset-cards"></div>
               <p class="reconstruction-note" id="ui-reconstruction-note"></p>
-              <label class="bottle-mode-option"><input type="checkbox" id="input-round-bottle" checked /><span id="ui-round-bottle"></span></label>
             </div>
 
             <div class="panel-section">
@@ -198,6 +198,10 @@ class GuidedGSplatApp {
           <!-- Center Column: Step-by-Step Coach + Viewfinder + Instant Shot Quality Inspector + Filmstrip -->
           <div class="viewfinder-col">
             <p class="video-capture-hint" id="ui-video-hint"></p>
+            <div class="video-import-options">
+              <label class="bottle-mode-option"><input type="checkbox" id="input-round-bottle" checked /><span id="ui-round-bottle"></span></label>
+              <label class="bottle-mode-option"><input type="checkbox" id="input-video-detail" checked /><span id="ui-video-detail"></span></label>
+            </div>
             <div class="coach-banner">
               <div>
                 <span class="coach-step-tag" id="coach-badge"></span>
@@ -408,6 +412,7 @@ class GuidedGSplatApp {
   }
 
   private bindEvents(): void {
+    document.getElementById('input-video-detail')!.addEventListener('change', event => { this.videoDetail = (event.target as HTMLInputElement).checked; });
     document.getElementById('input-round-bottle')!.addEventListener('change', event => {
       this.roundBottle = (event.target as HTMLInputElement).checked;
       this.invalidateCloud();
@@ -549,6 +554,7 @@ class GuidedGSplatApp {
         const mode = parseInt((btn as HTMLElement).dataset.rmode || '0', 10) as RenderMode;
         this.renderer.renderMode = mode;
         this.renderer.markDirty();
+        this.refreshStaticTexts();
       });
     });
 
@@ -684,6 +690,7 @@ class GuidedGSplatApp {
     document.getElementById('btn-add-detail')!.textContent = s.btnAddDetail;
     document.getElementById('ui-reconstruction-note')!.textContent = s.reconstructionNote;
     document.getElementById('ui-round-bottle')!.textContent = s.roundBottleOption;
+    document.getElementById('ui-video-detail')!.textContent = s.videoDetailOption;
     const method = document.getElementById('viewer-method')!;
     method.textContent = this.cloudMethod === 'bottle' ? s.roundBottleResult : s.hullResult;
     method.classList.toggle('hidden', !this.currentCloud || !this.cloudMethod);
@@ -743,10 +750,17 @@ class GuidedGSplatApp {
     document.getElementById('ui-viewport-hint')!.textContent = s.viewportControlsHint;
 
     document.getElementById('ui-view-mode-title')!.textContent = s.viewModeTitle;
-    document.getElementById('ui-mode-0')!.textContent = s.modeSplats;
+    document.getElementById('ui-mode-0')!.textContent = this.currentCloud?.surface ? s.modeTexture : s.modeSplats;
     document.getElementById('ui-mode-1')!.textContent = s.modeRings;
     document.getElementById('ui-mode-2')!.textContent = s.modeDepth;
     document.getElementById('ui-mode-3')!.textContent = s.modeCenters;
+    document.querySelectorAll<HTMLElement>('#render-mode-group [data-rmode]').forEach(button => {
+      button.classList.toggle('active', Number(button.dataset.rmode) === this.renderer.renderMode);
+    });
+    const texturedSurface = this.renderer.usesTexturedSurface;
+    for (const id of ['slider-scale', 'slider-cull', 'btn-toggle-grid']) {
+      (document.getElementById(id) as HTMLInputElement | HTMLButtonElement).disabled = texturedSurface;
+    }
 
     document.getElementById('ui-gpu-params-title')!.textContent = s.gpuParamsTitle;
     document.getElementById('ui-param-scale')!.textContent = s.paramScale;
@@ -880,7 +894,7 @@ class GuidedGSplatApp {
     // Reconstruct Button
     const reconBtn = document.getElementById('btn-reconstruct')!;
     reconBtn.textContent = report.isReadyToRender ? s.generateBtnReady : s.generateBtnEarly;
-    document.getElementById('ui-generate-hint')!.textContent = this.presetId === 'video' ? s.videoPlanHint : s.generateHintMin(
+    document.getElementById('ui-generate-hint')!.textContent = this.presetId.startsWith('video') ? s.videoPlanHint : s.generateHintMin(
       report.minimumViableCount,
       report.capturedCount,
       report.isReadyToRender
@@ -1012,9 +1026,18 @@ class GuidedGSplatApp {
     const st = this.latestStats;
     document.getElementById('stat-fps')!.textContent = `${st.fps} FPS (${st.frameTimeMs.toFixed(1)} ms)`;
     document.getElementById('stat-total')!.textContent = st.totalSplats.toLocaleString();
-    document.getElementById('stat-visible')!.textContent = `${st.visibleSplats.toLocaleString()} (-${st.culledPct}% ${s.culledSuffix})`;
-    document.getElementById('stat-sort')!.textContent = st.sortSkipped ? s.sortCached : s.sortActive;
-    document.getElementById('stat-vram')!.textContent = `${st.vramMB} MB`;
+    const surface = this.renderer.usesTexturedSurface;
+    for (const id of ['slider-scale', 'slider-cull', 'btn-toggle-grid']) {
+      (document.getElementById(id) as HTMLInputElement | HTMLButtonElement).disabled = surface;
+    }
+    if (this.cloudMethod === 'bottle' && this.currentCloud?.surface) {
+      document.getElementById('viewer-method')!.textContent = this.renderer.renderMode === 0 && !surface ? s.textureFallback : s.roundBottleResult;
+    }
+    document.getElementById('gpu-status-text')!.textContent = surface ? 'WebGL2' : this.webgpuSupported ? s.gpuReady : s.gpuFallback;
+    document.getElementById('gpu-status-dot')!.classList.toggle('warn', !surface && !this.webgpuSupported);
+    document.getElementById('stat-visible')!.textContent = surface ? this.t().modeTexture : `${st.visibleSplats.toLocaleString()} (-${st.culledPct}% ${s.culledSuffix})`;
+    document.getElementById('stat-sort')!.textContent = surface ? '—' : st.sortSkipped ? s.sortCached : s.sortActive;
+    document.getElementById('stat-vram')!.textContent = `${st.vramMB.toFixed(1)} MB`;
   }
 
   private setCameraFeedback(message: string): void {
@@ -1134,23 +1157,26 @@ class GuidedGSplatApp {
     try {
       const result = await extractVideoFrames(file, controller.signal, (completed, total) => {
         this.setBusy(true, this.t().videoBusyTitle, `${completed} / ${total} · ${this.t().videoLocalModelHint}`, Math.round(completed / total * 100));
-      }, this.roundBottle);
+      }, this.roundBottle, this.videoDetail ? 24 : 8);
       if (controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-      this.presetId = 'video';
-      this.slots = buildSlotsForPreset(CAPTURE_PRESETS.video);
+      this.presetId = result.targetFrames === 24 ? 'video_detail' : 'video';
+      const preset = CAPTURE_PRESETS[this.presetId];
+      this.slots = buildSlotsForPreset(preset);
       this.lastCapturedSlotIdx = null;
       for (const frame of result.frames) {
         const { image } = frame;
         if (this.storeCaptureInSlot(frame.bin, image.rgba, image.width, image.height, image.dataUrl, 'real', frame.foreground)) {
           this.slots[frame.bin].photo!.videoTimeSeconds = frame.time;
+          this.slots[frame.bin].photo!.texture = frame.texture;
         }
       }
       this.selectedSlotIdx = this.slots.find(slot => !slot.captured)?.index ?? 0;
       this.refreshAllUI();
       this.renderCurrentPreviewSlot();
       cancelButton.hidden = true;
-      this.setCameraFeedback(this.t().videoSelected(result.frames.length));
-      if (evaluateCoverage(CAPTURE_PRESETS.video, this.slots, this.selectedSlotIdx, this.locale).isReadyToRender) {
+      const sourceResolution = `${this.locale === 'zh' ? '源视频' : 'Source'} ${result.sourceWidth}×${result.sourceHeight} · `;
+      this.setCameraFeedback(sourceResolution + this.t().videoSelected(result.frames.length, result.sampled, preset.minimumPhotos!));
+      if (evaluateCoverage(preset, this.slots, this.selectedSlotIdx, this.locale).isReadyToRender) {
         await this.runReconstruction();
       }
     } catch (error) {
@@ -1350,8 +1376,8 @@ class GuidedGSplatApp {
       this.setCameraFeedback(s.backgroundUnclear);
       return;
     }
-    if (this.presetId === 'video' && capturedCount < 6) {
-      this.setCameraFeedback(s.videoNeedMoreViews);
+    if (this.presetId.startsWith('video') && capturedCount < (preset.minimumPhotos ?? 6)) {
+      this.setCameraFeedback(s.videoNeedMoreViews(preset.minimumPhotos ?? 6));
       return;
     }
     this.setBusy(true, s.busyReconTitle, '...', 10);
@@ -1359,7 +1385,7 @@ class GuidedGSplatApp {
     this.invalidateCloud();
     this.refreshStaticTexts();
     try {
-      const useBottle = this.roundBottle && this.presetId === 'video' && this.slots.some(slot => slot.photo?.source === 'real');
+      const useBottle = this.roundBottle && this.presetId.startsWith('video') && this.slots.some(slot => slot.photo?.source === 'real');
       const progress = (stage: string, pct: number) => this.setBusy(true, s.busyReconTitle, stage, pct);
       const cloud = useBottle ? await reconstructBottleFromCaptures(this.slots, progress) : await reconstructSplatsFromCaptures(
         this.slots,
@@ -1386,6 +1412,7 @@ class GuidedGSplatApp {
     this.currentCloud = cloud;
     this.cloudMethod = method;
     this.renderer.setSplatCloud(cloud);
+    this.renderer.renderMode = 0;
     this.renderer.autoTurntable = true;
     this.refreshStaticTexts();
     this.switchTab('render');

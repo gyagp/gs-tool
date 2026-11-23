@@ -16,6 +16,7 @@ import {
   Vec3
 } from '../math/mat4';
 import { SplatCloudData } from '../sfm/reconstruct';
+import { SurfaceRenderer } from './surfaceRenderer';
 import {
   GRID_WGSL,
   INDIRECT_ARGS_WGSL,
@@ -32,7 +33,7 @@ import {
 export type RenderMode = 0 | 1 | 2 | 3;
 
 export interface RendererStats {
-  backend: 'WebGPU (Indirect Compute + 4-Bit Radix)' | 'Canvas2D Fallback';
+  backend: 'WebGPU (Indirect Compute + 4-Bit Radix)' | 'Canvas2D Fallback' | 'WebGL2 Textured Surface';
   fps: number;
   frameTimeMs: number;
   totalSplats: number;
@@ -50,6 +51,8 @@ function floatBits(v: number): number {
 }
 
 export class WebGPUSplatRenderer {
+  private surfaceRenderer: SurfaceRenderer;
+  public get usesTexturedSurface() { return this.renderMode === 0 && this.surfaceRenderer.ready; }
   private canvas: HTMLCanvasElement;
   private device: GPUDevice | null = null;
   private context: GPUCanvasContext | null = null;
@@ -142,6 +145,7 @@ export class WebGPUSplatRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
+    this.surfaceRenderer = new SurfaceRenderer(canvas.parentElement!);
     this.bindInteraction();
   }
 
@@ -523,6 +527,7 @@ export class WebGPUSplatRenderer {
   }
 
   public clearSplatCloud(): void {
+    this.surfaceRenderer.clear();
     this.currentCloud = null;
     this.splatCount = 0;
     this.lastVisibleCount = 0;
@@ -531,6 +536,7 @@ export class WebGPUSplatRenderer {
   }
 
   public setSplatCloud(cloud: SplatCloudData): void {
+    this.surfaceRenderer.setSurface(cloud.surface);
     this.currentCloud = cloud;
     this.splatCount = cloud.count;
     this.lastVisibleCount = cloud.count;
@@ -604,11 +610,6 @@ export class WebGPUSplatRenderer {
       this.dirtySort = true;
     }
 
-    if (!this.device || !this.context) {
-      this.renderSoftwareFallback(width, height);
-      return;
-    }
-
     const eye = sphericalToCartesian(this.yawDeg, this.pitchDeg, this.distance);
     eye[0] += this.target[0];
     eye[1] += this.target[1];
@@ -618,6 +619,19 @@ export class WebGPUSplatRenderer {
     const fovRad = (this.fovDeg * Math.PI) / 180;
     mat4PerspectiveZO(fovRad, width / height, 0.08, 40.0, this.projMat);
     mat4Multiply(this.projMat, this.viewMat, this.vpMat);
+
+    // Both projection helpers use [0,1] clip depth; remap to WebGL's [-1,1].
+    if (this.currentCloud?.surface && this.renderMode === 0) {
+      const glVP = new Float32Array(this.vpMat);
+      for (let column = 0; column < 4; column++) glVP[column * 4 + 2] = 2 * glVP[column * 4 + 2] - glVP[column * 4 + 3];
+      if (this.surfaceRenderer.render(glVP, width, height, Math.atan2(eye[0] - this.target[0], eye[2] - this.target[2]))) {
+        this.frameCounter++;
+        if (this.frameCounter % 15 === 0) this.onStats?.({ backend: 'WebGL2 Textured Surface', fps: Math.round(this.smoothedFps), frameTimeMs: this.smoothedMs, totalSplats: this.splatCount, visibleSplats: 0, culledPct: 0, sortSkipped: true, vramMB: this.surfaceRenderer.vramMB });
+        return;
+      }
+    }
+    this.surfaceRenderer.hide();
+    if (!this.device || !this.context) { this.renderSoftwareFallback(width, height); return; }
 
     const camSig = `${width}x${height}:${this.yawDeg.toFixed(3)}:${this.pitchDeg.toFixed(3)}:${this.distance.toFixed(4)}:${this.target.join(',')}:${this.splatScale.toFixed(3)}:${this.minContribution.toFixed(3)}:${this.renderMode}`;
     const needsComputeAndSort = this.splatCount > 0 && (this.dirtySort || camSig !== this.lastCameraSignature);

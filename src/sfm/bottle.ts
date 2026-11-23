@@ -1,6 +1,8 @@
 import type { CaptureSlot } from '../capture/coverage';
 import { foregroundFromMask } from '../capture/foreground';
 import { normalToTangentQuat, packSplatsForGPU, ReconstructionError, type SplatCloudData } from './reconstruct';
+import type { TexturedSurfaceData } from './surface';
+import { sampleCaptureColor } from '../capture/colorSampling';
 
 interface BottleView {
   slot: CaptureSlot;
@@ -11,6 +13,54 @@ interface BottleView {
 
 const ROWS = 256;
 const median = (a: number[]) => { a.sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
+
+/** Bilinear source sampling uses preserved texture pixels, not the segmentation thumbnail. */
+export function sampleBottleColor(view: BottleView, t: number, delta: number): number[] {
+  const photo = view.slot.photo!;
+  const row = Math.max(0, Math.min(ROWS - 1, t * (ROWS - 1))), y0 = Math.floor(row), y1 = Math.min(ROWS - 1, y0 + 1), f = row - y0;
+  const left = view.left[y0] * (1 - f) + view.left[y1] * f;
+  const right = view.right[y0] * (1 - f) + view.right[y1] * f;
+  const u = (left + right) / 2 + Math.sin(delta) * (right - left) / 2 * .98;
+  const v = view.top + t * (view.height - 1);
+  let x = view.cx + u * view.cos + v * view.sin, y = view.cy - u * view.sin + v * view.cos;
+  return sampleCaptureColor(photo, x, y);
+}
+
+function buildTexturedSurface(views: BottleView[], radii: Float32Array, height: number): TexturedSurfaceData {
+  // A single captured view covers the visible surface at a time. Unknown poses make
+  // a static strip atlas tear labels; preserving complete views avoids that failure.
+  const textures = views.map(view => {
+    const photo = view.slot.photo!, source = photo.texture;
+    const pixelsPerWorkPixel = source ? source.height / source.sourceHeight : 1;
+    const textureHeight = Math.max(1, Math.min(1920, Math.ceil(view.height * pixelsPerWorkPixel)));
+    const textureWidth = Math.max(1, Math.min(1024, Math.ceil(Math.max(...view.right.map((r, i) => r - view.left[i] + 1)) * pixelsPerWorkPixel)));
+    const rgba = new Uint8ClampedArray(textureWidth * textureHeight * 4);
+    for (let x = 0; x < textureWidth; x++) for (let y = 0; y < textureHeight; y++) {
+      const color = sampleBottleColor(view, (y + .5) / textureHeight, Math.asin((x + .5) / textureWidth * 2 - 1));
+      const p = (y * textureWidth + x) * 4;
+      rgba[p] = color[0] * 255; rgba[p + 1] = color[1] * 255; rgba[p + 2] = color[2] * 255; rgba[p + 3] = 255;
+    }
+    return { azimuthRad: view.slot.azimuthDeg * Math.PI / 180, timeSeconds: photo.videoTimeSeconds,
+      width: textureWidth, height: textureHeight, rgba };
+  });
+  const sides = 192, rows = ROWS;
+  const positions = new Float32Array((rows + 1) * (sides + 1) * 3);
+  const normals = new Float32Array(positions.length), uvs = new Float32Array((rows + 1) * (sides + 1) * 2);
+  const indices: number[] = [];
+  for (let y = 0; y <= rows; y++) for (let a = 0; a <= sides; a++) {
+    const t = y / rows, theta = a / sides * 2 * Math.PI;
+    const i = y * (sides + 1) + a, row = Math.min(ROWS - 1, Math.round(t * (ROWS - 1)));
+    // Close only the two measured silhouette endpoints; hidden cap/base details remain unknown.
+    const r = y === 0 || y === rows ? 0 : radii[row];
+    positions.set([r * Math.sin(theta), .05 + height * (.5 - t), r * Math.cos(theta)], i * 3);
+    const slope = (radii[Math.min(ROWS - 1, row + 1)] - radii[Math.max(0, row - 1)]) / (2 * height / ROWS);
+    const length = Math.hypot(1, slope);
+    normals.set([Math.sin(theta) / length, slope / length, Math.cos(theta) / length], i * 3);
+    uvs.set([a / sides, t], i * 2);
+    if (y < rows && a < sides) { const j = i + sides + 1; indices.push(i, j, i + 1, i + 1, j, j + 1); }
+  }
+  return { positions, normals, uvs, indices: new Uint32Array(indices), views: textures };
+}
 
 /** Observed silhouette in an upright coordinate system; no color-based re-segmentation. */
 function prepareView(slot: CaptureSlot): BottleView {
@@ -52,7 +102,10 @@ function prepareView(slot: CaptureSlot): BottleView {
     left[row] = left[before] * (1 - t) + left[after] * t;
     right[row] = right[before] * (1 - t) + right[after] * t;
   }
-  return { slot, cx, cy, cos, sin, top, height, left, right };
+  // Suppress pixel-scale mask stair steps before mapping the original-resolution
+  // image. The low-resolution mask should not introduce wavy label lettering.
+  const smooth = (values: Float32Array) => values.map((_, row) => median(Array.from({ length: 9 }, (_, i) => values[Math.max(0, Math.min(ROWS - 1, row + i - 4))])));
+  return { slot, cx, cy, cos, sin, top, height, left: smooth(left), right: smooth(right) };
 }
 
 /**
@@ -103,16 +156,17 @@ export async function reconstructBottleFromCaptures(
       const px = Math.max(0, Math.min(photo.workWidth - 1, Math.round(view.cx + u * view.cos + v * view.sin)));
       const py = Math.max(0, Math.min(photo.workHeight - 1, Math.round(view.cy - u * view.sin + v * view.cos)));
       if (!photo.foregroundMask[py * photo.workWidth + px]) continue;
-      const p = (py * photo.workWidth + px) * 4;
       positions.push(radius * sin, .05 + worldHeight * (.5 - (y + .5) / ROWS), radius * cos);
       const scale = Math.max(verticalStep, 2 * Math.PI * radius / sides) * .68;
       scales.push(scale, scale, verticalStep * .22);
       quats.push(...normalToTangentQuat(sin, slope, cos));
-      colors.push(photo.rgba[p] / 255, photo.rgba[p + 1] / 255, photo.rgba[p + 2] / 255, .97);
+      const color = sampleBottleColor(view, (y + .5) / ROWS, delta);
+      colors.push(color[0], color[1], color[2], .97);
     }
   }
   if (positions.length < ROWS * sides * .6 * 3) throw new ReconstructionError('geometry');
   const result = packSplatsForGPU(new Float32Array(positions), new Float32Array(scales), new Float32Array(quats), new Float32Array(colors), positions.length / 3);
+  result.surface = buildTexturedSurface(views, smooth, worldHeight);
   result.buildTimeMs = performance.now() - start;
   onProgress?.('Round-bottle approximation ready; camera directions remain estimated', 100);
   return result;

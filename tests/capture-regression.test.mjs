@@ -9,8 +9,9 @@ const bundle = await build({
   build: { ssr: 'tests/capture-api.ts', write: false, minify: false, target: 'node22' }
 });
 const api = await import(`data:text/javascript;base64,${Buffer.from(bundle.output[0].code).toString('base64')}`);
-const { extractForeground, getCaptureDimensions, CAPTURE_PRESETS, buildSlotsForPreset,
-  evaluateCoverage, reconstructSplatsFromCaptures, reconstructBottleFromCaptures, ReconstructionError, selectDistinctFrame } = api;
+const { extractForeground, getCaptureDimensions, getTextureDimensions, CAPTURE_PRESETS, buildSlotsForPreset,
+  evaluateCoverage, reconstructSplatsFromCaptures, reconstructBottleFromCaptures, ReconstructionError, selectDistinctFrame,
+  sampleCaptureColor, nearestTextureView } = api;
 
 function bottlePixels() {
   const width = 160, height = 288;
@@ -170,4 +171,87 @@ test('reconstruction uses the inspected mask even when subject colors also occur
   const cloud = await reconstructSplatsFromCaptures(slots,48,'standard');
   assert.ok(cloud.count>100);
   assert.ok(cloud.colors.every(v=>Number.isFinite(v)));
+});
+
+test('high-resolution color sampling keeps original fine detail independently of the geometry mask', () => {
+  const photo = { workWidth: 2, workHeight: 2, rgba: new Uint8ClampedArray(16).fill(0),
+    texture: { width: 4, height: 4, x: 0, y: 0, sourceWidth: 2, sourceHeight: 2, rgba: new Uint8ClampedArray(64) } };
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) photo.texture.rgba.set([x * 85, y * 85, 255, 255], (y * 4 + x) * 4);
+  assert.deepEqual(sampleCaptureColor(photo, -.25, -.25), [0, 0, 1]);
+  assert.deepEqual(sampleCaptureColor(photo, 1.25, 1.25), [1, 1, 1]);
+  assert.deepEqual(sampleCaptureColor(photo, .5, .5), [.5, .5, 1]);
+  photo.texture.x = 5; photo.texture.y = 7;
+  assert.deepEqual(sampleCaptureColor(photo, 5.5, 7.5), [.5, .5, 1], 'cropped source coordinates');
+  assert.deepEqual(sampleCaptureColor({ ...photo, texture: undefined }, 1, 1), [0, 0, 0]);
+});
+
+test('texture preservation respects source resolution and a phone-friendly pixel budget', () => {
+  for (const [width, height] of [[3840, 2160], [2160, 3840], [4096, 4096], [480, 720], [320, 1920]]) {
+    const output = getTextureDimensions(width, height);
+    assert.ok(output.width <= width && output.height <= height, 'never upscale the source');
+    assert.ok(Math.max(output.width, output.height) <= 1920);
+    assert.ok(output.width * output.height <= 512 * 1024);
+    assert.ok(Math.abs(output.width / output.height - width / height) < .01);
+  }
+  assert.deepEqual(getTextureDimensions(180, 660), { width: 180, height: 660 });
+});
+
+test('detail video requires twelve usable frames and never adds an unseen overhead ring', () => {
+  const preset = CAPTURE_PRESETS.video_detail, slots = buildSlotsForPreset(preset), photo = capturedBottleSlots()[0].photo;
+  assert.equal(slots.length, 24);
+  slots.filter((_, i) => i % 2 === 0).slice(0, 11).forEach(slot => { slot.captured = true; slot.photo = { ...photo }; });
+  assert.equal(evaluateCoverage(preset, slots, 0, 'en').isReadyToRender, false);
+  slots[22].captured = true; slots[22].photo = { ...photo };
+  const report = evaluateCoverage(preset, slots, 0, 'en');
+  assert.equal(report.isReadyToRender, true);
+  assert.equal(report.topRingCapturedCount, 0);
+  assert.ok(slots.every(slot => slot.elevationDeg === 0));
+});
+
+test('view-dependent texture selection wraps smoothly around zero and keeps a whole source view', async () => {
+  const views = [350, 15, 180].map(a => ({ azimuthRad: a * Math.PI / 180 }));
+  assert.equal(nearestTextureView(views, 359 * Math.PI / 180), 0);
+  assert.equal(nearestTextureView(views, 370 * Math.PI / 180), 1);
+  assert.equal(nearestTextureView(views, -180 * Math.PI / 180), 2);
+  assert.equal(nearestTextureView([], 0), -1);
+  const slots = capturedBottleSlots().map((slot, i) => {
+    const color = [i * 28, 255 - i * 28, 64, 255];
+    const rgba = new Uint8ClampedArray(slot.photo.rgba.length);
+    for (let p = 0; p < rgba.length; p += 4) rgba.set(color, p);
+    return { ...slot, photo: { ...slot.photo, rgba } };
+  });
+  const { surface } = await reconstructBottleFromCaptures(slots);
+  assert.equal(surface.views.length, slots.length);
+  surface.views.forEach((view, i) => {
+    assert.equal(view.rgba.length, view.width * view.height * 4);
+    for (let p = 0; p < view.rgba.length; p += 4) assert.deepEqual([...view.rgba.subarray(p, p + 4)], [i * 28, 255 - i * 28, 64, 255]);
+  });
+  assert.ok(surface.indices.every(i => i < surface.positions.length / 3));
+  assert.ok(surface.uvs.every(u => u >= 0 && u <= 1));
+  assert.ok(surface.positions.every(Number.isFinite));
+});
+
+test('generic reconstruction does not acquire round-bottle geometry or view textures', async () => {
+  const cloud = await reconstructSplatsFromCaptures(capturedBottleSlots(), 48, 'standard');
+  assert.equal(cloud.surface, undefined);
+});
+
+test('a wide object stays wide in generic mode and is rejected by the round-bottle fitter', async () => {
+  const slots = buildSlotsForPreset(CAPTURE_PRESETS.video).map(slot => {
+    const width = 160, height = 160, rgba = new Uint8ClampedArray(width * height * 4).fill(255), mask = new Uint8Array(width * height);
+    const angle = slot.azimuthDeg * Math.PI / 180;
+    const halfWidth = 48 * Math.abs(Math.cos(angle)) + 30 * Math.abs(Math.sin(angle));
+    for (let y = 62; y < 98; y++) for (let x = Math.ceil(80 - halfWidth); x < 80 + halfWidth; x++) {
+      const i = y * width + x; mask[i] = 255; rgba.set([40, 100 + x % 40, 200, 255], i * 4);
+    }
+    return { ...slot, captured: true, photo: { ...capturedBottleSlots()[0].photo, rgba, foregroundMask: mask, workWidth: width, workHeight: height } };
+  });
+  await assert.rejects(reconstructBottleFromCaptures(slots), e => e instanceof ReconstructionError && e.code === 'geometry');
+  const cloud = await reconstructSplatsFromCaptures(slots, 48, 'standard');
+  assert.ok(cloud.count > 100); assert.equal(cloud.surface, undefined);
+  const range = axis => {
+    const a = [...cloud.positions].filter((_, i) => i % 3 === axis); return Math.max(...a) - Math.min(...a);
+  };
+  assert.ok(range(0) > range(1) * 1.5);
+  assert.ok(range(2) > range(1) * 1.5);
 });

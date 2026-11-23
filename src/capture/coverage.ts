@@ -6,8 +6,9 @@
 
 import { sphericalToCartesian, Vec3 } from '../math/mat4';
 import { Locale, OCTANT_LABELS } from '../i18n/translations';
+import type { CaptureTexture } from './photoProcessing';
 
-export type CapturePresetId = 'minimal' | 'video' | 'express' | 'standard' | 'studio';
+export type CapturePresetId = 'minimal' | 'video' | 'video_detail' | 'express' | 'standard' | 'studio';
 export type ShotVerdict = 'good' | 'warn' | 'bad';
 
 export interface RingSpec {
@@ -49,6 +50,7 @@ export interface ShotIssue {
 }
 
 export interface CapturedPhoto {
+  texture?: CaptureTexture;
   videoTimeSeconds?: number;
   source: 'real' | 'demo';
   foregroundMask: Uint8Array;
@@ -108,6 +110,20 @@ export interface CoverageReport {
 }
 
 export const CAPTURE_PRESETS: Record<CapturePresetId, CapturePreset> = {
+  video_detail: {
+    id: 'video_detail',
+    name: { zh: '视频细节优先', en: 'Detailed Orbit Video' },
+    badge: { zh: '最多 24 帧 · 高清纹理', en: 'Up to 24 Frames · HD Texture' },
+    totalPhotos: 24, minimumPhotos: 12, recommendedFovDeg: 48, angularStepDeg: 15,
+    useCase: {
+      zh: '保留原视频瓶身纹理（最长边最多 1920 像素），更多视角减少侧面拉伸。方向仍按完整一圈视频的时间估算，不是精确重建。',
+      en: 'Preserve source bottle texture up to 1920px. More views reduce oblique stretching. Directions still assume a steady full orbit; this is an approximation.'
+    },
+    rings: [{ id: 'equator', count: 24, elevationDeg: 0,
+      label: { zh: '视频细节环绕（方向估算）', en: 'Detailed Orbit (Estimated Directions)' },
+      purpose: { zh: '从 144 个候选画面中保留最多 24 个清晰、不同的关键帧。', en: 'Select up to 24 clear, distinct views from 144 candidates.' }
+    }]
+  },
   video: {
     id: 'video',
     name: { zh: '视频环绕采集', en: 'Orbit Video' },
@@ -645,8 +661,8 @@ export function evaluateCoverage(
   let missingSummaryText = '';
   if (locale === 'zh') {
     if (capturedCount === 0) {
-      missingSummaryText = preset.id === 'video'
-        ? '录制完整一圈视频，自动选取 6–8 个关键帧。方向为估算值，顶部不在这次采集范围内。'
+      missingSummaryText = preset.id.startsWith('video')
+        ? `录制完整一圈视频，自动选取最多 ${requiredCount} 个关键帧。方向为估算值，顶部不在这次采集范围内。`
         : `当前方案推荐 ${requiredCount} 张：按引导拍四周和顶部，可先预览，再按需补拍。`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
@@ -675,8 +691,8 @@ export function evaluateCoverage(
     }
   } else {
     if (capturedCount === 0) {
-      missingSummaryText = preset.id === 'video'
-        ? 'Record one full orbit for 6–8 keyframes. Directions are estimates; top views are not included.'
+      missingSummaryText = preset.id.startsWith('video')
+        ? `Record one full orbit for up to ${requiredCount} keyframes. Directions are estimates; top views are not included.`
         : `This plan recommends ${requiredCount} side and top views. Preview first, then add angles if needed.`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =

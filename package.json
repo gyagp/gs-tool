@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/capture-regression.test.mjs",
+    "test:video": "node tests/video-detail.browser.mjs",
     "dev": "node scripts/prepare-inference.mjs && vite",
     "build": "node scripts/prepare-inference.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -12,6 +13,7 @@
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.52",
+    "playwright-core": "^1.65.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
     "wrangler": "^4.16.0"

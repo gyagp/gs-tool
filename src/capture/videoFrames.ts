@@ -1,6 +1,6 @@
 import { extractForeground, ForegroundResult } from './foreground';
 import { inspectCapturedPhoto } from './coverage';
-import { prepareCaptureImage } from './photoProcessing';
+import { prepareCaptureImage, captureSubjectTexture, type CaptureTexture } from './photoProcessing';
 import { segmentSubject } from './subjectSegmentation';
 
 export interface ScoredVideoFrame {
@@ -11,6 +11,7 @@ export interface ScoredVideoFrame {
 }
 
 export interface VideoFrame extends ScoredVideoFrame {
+  texture?: CaptureTexture;
   image: ReturnType<typeof prepareCaptureImage>;
   foreground: ForegroundResult;
 }
@@ -86,8 +87,9 @@ export async function extractVideoFrames(
   file: File,
   signal: AbortSignal,
   onProgress: (completed: number, total: number) => void,
-  roundBottle = false
-): Promise<{ frames: VideoFrame[]; sampled: number; duration: number }> {
+  roundBottle = false,
+  targetFrames: 8 | 24 = 8
+): Promise<{ frames: VideoFrame[]; sampled: number; duration: number; targetFrames: 8 | 24; sourceWidth: number; sourceHeight: number }> {
   const video = document.createElement('video');
   video.preload = 'auto'; video.muted = true; video.playsInline = true; video.hidden = true;
   document.body.append(video);
@@ -104,12 +106,13 @@ export async function extractVideoFrames(
     const duration = video.duration;
     if (!Number.isFinite(duration) || duration < 2 || duration > 90) throw new VideoFrameError('duration');
     const frames: VideoFrame[] = [];
-    const sampled = 48;
-    for (let bin = 0; bin < 8; bin++) {
+    const sampled = targetFrames * 6;
+    const steps = targetFrames * 7;
+    for (let bin = 0; bin < targetFrames; bin++) {
       const candidates: { time: number; image: VideoFrame['image']; score: number }[] = [];
       for (let sample = 0; sample < 6; sample++) {
         if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-        const time = (bin + (sample + 0.5) / 6) * duration / 8;
+        const time = (bin + (sample + 0.5) / 6) * duration / targetFrames;
         await seek(time);
         const image = prepareCaptureImage(video, video.videoWidth, video.videoHeight);
         const quality = inspectCapturedPhoto(image.rgba, image.width, image.height);
@@ -117,7 +120,7 @@ export async function extractVideoFrames(
             time, image,
             score: quality.sharpnessScore * 0.65 + quality.exposureScore * 0.25 + (1 - quality.centerOffset) * 10
         });
-        onProgress(bin * 7 + sample + 1, 56);
+        onProgress(bin * 7 + sample + 1, steps);
       }
       for (const candidate of candidates.sort((a, b) => b.score - a.score).slice(0, roundBottle ? 6 : 3)) {
         if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -140,12 +143,18 @@ export async function extractVideoFrames(
           if (observed < expected * .85 || observed > expected * 1.18) continue;
         }
         const frame: VideoFrame = { ...candidate, bin, foreground, fingerprint: fingerprint(image, foreground) };
-        if (selectDistinctFrame([frame], frames)) { frames.push(frame); break; }
+        if (selectDistinctFrame([frame], frames)) {
+          if (targetFrames === 24) {
+            await seek(candidate.time);
+            frame.texture = captureSubjectTexture(video, video.videoWidth, video.videoHeight, image.width, image.height, foreground.bounds!);
+          }
+          frames.push(frame); break;
+        }
       }
-      onProgress((bin + 1) * 7, 56);
+      onProgress((bin + 1) * 7, steps);
     }
     if (!frames.length) throw new VideoFrameError('no_frames');
-    return { frames, sampled, duration };
+    return { frames, sampled, duration, targetFrames, sourceWidth: video.videoWidth, sourceHeight: video.videoHeight };
   } finally {
     video.pause(); video.removeAttribute('src'); video.load(); video.remove(); URL.revokeObjectURL(url);
   }
