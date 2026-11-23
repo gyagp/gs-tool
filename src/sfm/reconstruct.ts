@@ -10,6 +10,7 @@
  */
 
 import { CaptureSlot } from '../capture/coverage';
+import { extractForeground } from '../capture/foreground';
 import {
   computeMortonOrder,
   mat4LookAt,
@@ -45,67 +46,42 @@ interface PreparedCameraView {
   fgMask: Uint8Array;
 }
 
-function estimateForegroundMask(rgba: Uint8ClampedArray, w: number, h: number): Uint8Array {
-  // Sample outer perimeter pixels to model studio/room background color distribution
-  let sumR = 0, sumG = 0, sumB = 0, n = 0;
-  for (let x = 0; x < w; x++) {
-    const top = x * 4;
-    const bot = ((h - 1) * w + x) * 4;
-    sumR += rgba[top] + rgba[bot];
-    sumG += rgba[top + 1] + rgba[bot + 1];
-    sumB += rgba[top + 2] + rgba[bot + 2];
-    n += 2;
+export class ReconstructionError extends Error {
+  constructor(public readonly code: 'foreground' | 'geometry') {
+    super(code);
+    this.name = 'ReconstructionError';
   }
-  for (let y = 1; y < h - 1; y++) {
-    const left = y * w * 4;
-    const right = (y * w + (w - 1)) * 4;
-    sumR += rgba[left] + rgba[right];
-    sumG += rgba[left + 1] + rgba[right + 1];
-    sumB += rgba[left + 2] + rgba[right + 2];
-    n += 2;
-  }
-  const bgR = sumR / n;
-  const bgG = sumG / n;
-  const bgB = sumB / n;
+}
 
-  // Compute border variance for adaptive threshold
-  let varSum = 0;
-  for (let x = 0; x < w; x += 2) {
-    const top = x * 4;
-    const dr = rgba[top] - bgR;
-    const dg = rgba[top + 1] - bgG;
-    const db = rgba[top + 2] - bgB;
-    varSum += dr * dr + dg * dg + db * db;
+function prepareReconstructionPixels(slot: CaptureSlot) {
+  const photo = slot.photo!;
+  const foreground = extractForeground(photo.rgba, photo.workWidth, photo.workHeight);
+  if (!foreground.usable || !foreground.bounds) throw new ReconstructionError('foreground');
+  if (photo.source === 'demo') {
+    return { width: photo.workWidth, height: photo.workHeight, rgba: photo.rgba, fgMask: foreground.mask };
   }
-  const stdBg = Math.sqrt(varSum / Math.max(1, w / 2));
-  const threshold = Math.max(22, Math.min(58, stdBg * 2.2 + 18));
 
-  const mask = new Uint8Array(w * h);
-  let fgCount = 0;
-  for (let i = 0, p = 0; i < mask.length; i++, p += 4) {
-    const dr = rgba[p] - bgR;
-    const dg = rgba[p + 1] - bgG;
-    const db = rgba[p + 2] - bgB;
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-    if (dist > threshold) {
-      mask[i] = 255;
-      fgCount++;
+  // Phone framing is not calibrated to the demo's fixed camera distance. Fit the observed
+  // subject inside the reconstruction volume instead of letting it fill/clamp the entire cube.
+  const size = 384;
+  const { x, y, width, height } = foreground.bounds;
+  const scale = size * 0.46 / Math.max(width, height);
+  const cx = x + width / 2, cy = y + height / 2;
+  const rgba = new Uint8ClampedArray(size * size * 4);
+  const fgMask = new Uint8Array(size * size);
+  for (let py = 0; py < size; py++) {
+    const sy = Math.floor((py + 0.5 - size / 2) / scale + cy);
+    if (sy < 0 || sy >= photo.workHeight) continue;
+    for (let px = 0; px < size; px++) {
+      const sx = Math.floor((px + 0.5 - size / 2) / scale + cx);
+      if (sx < 0 || sx >= photo.workWidth) continue;
+      const source = sy * photo.workWidth + sx;
+      const target = py * size + px;
+      fgMask[target] = foreground.mask[source];
+      for (let channel = 0; channel < 4; channel++) rgba[target * 4 + channel] = photo.rgba[source * 4 + channel];
     }
   }
-
-  // Fallback for cluttered natural backgrounds: weight central framing ellipse where user centered object
-  if (fgCount > w * h * 0.88 || fgCount < w * h * 0.02) {
-    for (let y = 0; y < h; y++) {
-      const ny = ((y + 0.5) / h) * 2 - 1;
-      for (let x = 0; x < w; x++) {
-        const nx = ((x + 0.5) / w) * 2 - 1;
-        const r2 = nx * nx * 1.15 + ny * ny * 1.05;
-        mask[y * w + x] = r2 <= 0.72 ? 255 : 0;
-      }
-    }
-  }
-
-  return mask;
+  return { width: size, height: size, rgba, fgMask };
 }
 
 function normalToTangentQuat(nx: number, ny: number, nz: number): Quat {
@@ -224,29 +200,25 @@ export async function reconstructSplatsFromCaptures(
   onProgress?: (stage: string, pct: number) => void
 ): Promise<SplatCloudData> {
   const tStart = performance.now();
-  onProgress?.('Calibrating camera intrinsics & foreground silhouettes...', 12);
+  onProgress?.('Separating foreground & aligning approximate guided views...', 12);
   await new Promise((r) => setTimeout(r, 10));
 
   const views: PreparedCameraView[] = capturedSlots
     .filter((s) => s.captured && s.photo)
     .map((slot) => {
-      const photo = slot.photo!;
+      const pixels = prepareReconstructionPixels(slot);
       const view = mat4LookAt(slot.position, [0, 0.05, 0], [0, 1, 0]);
       const proj = mat4PerspectiveZO(
         (fovDeg * Math.PI) / 180,
-        photo.workWidth / photo.workHeight,
+        pixels.width / pixels.height,
         0.1,
         20.0
       );
       const vp = mat4Multiply(proj, view);
-      const fgMask = estimateForegroundMask(photo.rgba, photo.workWidth, photo.workHeight);
       return {
         vp,
         eye: slot.position,
-        width: photo.workWidth,
-        height: photo.workHeight,
-        rgba: photo.rgba,
-        fgMask
+        ...pixels
       };
     });
 
@@ -357,6 +329,8 @@ export async function reconstructSplatsFromCaptures(
     return (fineBitset[flat >>> 5] & (1 << (flat & 31))) !== 0;
   };
 
+  if (fineCoords.length / totalFine > 0.65) throw new ReconstructionError('geometry');
+
   // Extract boundary surface shell + compute outward gradient normal + fuse front-facing camera colors
   const maxSplats = 120000;
   const posList: number[] = [];
@@ -436,6 +410,7 @@ export async function reconstructSplatsFromCaptures(
 
       const px = Math.floor((ndcX * 0.5 + 0.5) * cam.width);
       const py = Math.floor((0.5 - ndcY * 0.5) * cam.height);
+      if (!cam.fgMask[py * cam.width + px]) continue;
       const pIdx = (py * cam.width + px) * 4;
 
       const weight = Math.pow(cosTheta, 3.2);
@@ -494,23 +469,7 @@ export async function reconstructSplatsFromCaptures(
     if (posList.length / 3 >= maxSplats) break;
   }
 
-  // Fallback procedural point cloud if masks yielded 0 points (e.g. completely uniform blank photo)
-  if (posList.length === 0) {
-    for (let i = 0; i < 4096; i++) {
-      const u = (i + 0.5) / 4096;
-      const phi = Math.acos(1 - 2 * u);
-      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-      const r = 0.45;
-      const nx = Math.sin(phi) * Math.cos(theta);
-      const ny = Math.cos(phi);
-      const nz = Math.sin(phi) * Math.sin(theta);
-      const q = normalToTangentQuat(nx, ny, nz);
-      posList.push(nx * r, ny * r, nz * r);
-      scaleList.push(0.022, 0.022, 0.006);
-      quatList.push(q[0], q[1], q[2], q[3]);
-      colorList.push(0.1, 0.85, 0.75, 0.9);
-    }
-  }
+  if (posList.length === 0) throw new ReconstructionError('geometry');
 
   onProgress?.('Sorting Morton Z-order curve & uploading packed 32-byte GPU buffers...', 92);
   await new Promise((r) => setTimeout(r, 8));

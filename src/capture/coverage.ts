@@ -42,12 +42,14 @@ export interface CaptureSlot {
 }
 
 export interface ShotIssue {
-  code: 'blurry' | 'too_dark' | 'too_bright' | 'too_small' | 'off_center' | 'duplicate';
+  code: 'blurry' | 'too_dark' | 'too_bright' | 'too_small' | 'off_center' | 'duplicate' | 'background';
   severity: 'warn' | 'bad';
   message: Record<Locale, string>;
 }
 
 export interface CapturedPhoto {
+  source: 'real' | 'demo';
+  foregroundMask: Uint8Array;
   slotIndex: number;
   azimuthDeg: number;
   elevationDeg: number;
@@ -557,6 +559,7 @@ export function evaluateCoverage(
   const capturedCount = capturedSlots.length;
   const goodCount = capturedSlots.filter((s) => s.photo?.verdict === 'good').length;
   const warnOrBadCount = capturedCount - goodCount;
+  const badCount = capturedSlots.filter(s => s.photo?.verdict === 'bad').length;
 
   const requiredCount = slots.length;
   const completionPct = Math.round((capturedCount / Math.max(1, requiredCount)) * 100);
@@ -616,7 +619,7 @@ export function evaluateCoverage(
   }
 
   const missingSectors = sectors.filter((s) => !s.covered);
-  const isReadyToRender = capturedCount >= minimumViableCount && missingSectors.length <= 2 && topRingCovered;
+  const isReadyToRender = capturedCount >= minimumViableCount && missingSectors.length <= 2 && topRingCovered && badCount === 0;
   const isOptimalQuality = capturedCount === requiredCount && warnOrBadCount === 0;
 
   let missingSummaryText = '';
@@ -625,7 +628,9 @@ export function evaluateCoverage(
       missingSummaryText = `当前方案推荐 ${requiredCount} 张：按引导拍四周和顶部，可先预览，再按需补拍。`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
-        warnOrBadCount > 0
+        badCount > 0
+          ? `有 ${badCount} 张照片需要重拍，请先检查清晰度与抠图，避免背景变成实体。`
+          : warnOrBadCount > 0
           ? `全部 ${requiredCount} 个机位已拍完！其中有 ${warnOrBadCount} 张提示小瑕疵，可直接生成 3D 或点击黄框重拍。`
           : `已拍齐 ${requiredCount} 个推荐角度！可先生成预览，细节不足时再补拍。`;
     } else {
@@ -651,7 +656,9 @@ export function evaluateCoverage(
       missingSummaryText = `This plan recommends ${requiredCount} side and top views. Preview first, then add angles if needed.`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
-        warnOrBadCount > 0
+        badCount > 0
+          ? `${badCount} photos need retaking. Check focus and the cutout before reconstruction.`
+          : warnOrBadCount > 0
           ? `All ${requiredCount} stations captured (${warnOrBadCount} flagged with minor warnings). Ready to reconstruct!`
           : `All ${requiredCount} recommended angles captured! Preview now and add views if details need improvement.`;
     } else {

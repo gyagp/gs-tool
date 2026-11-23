@@ -522,6 +522,14 @@ export class WebGPUSplatRenderer {
     });
   }
 
+  public clearSplatCloud(): void {
+    this.currentCloud = null;
+    this.splatCount = 0;
+    this.lastVisibleCount = 0;
+    this.autoTurntable = false;
+    this.markDirty();
+  }
+
   public setSplatCloud(cloud: SplatCloudData): void {
     this.currentCloud = cloud;
     this.splatCount = cloud.count;

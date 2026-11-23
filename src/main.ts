@@ -11,6 +11,8 @@ import {
 } from './capture/coverage';
 import { CaptureDomeVisualizer } from './capture/domeVisualizer';
 import { renderSyntheticCaptureView } from './capture/syntheticSubject';
+import { extractForeground } from './capture/foreground';
+import { prepareCaptureImage } from './capture/photoProcessing';
 import {
   describeAzimuth,
   describeElevation,
@@ -19,7 +21,7 @@ import {
   saveLocale,
   UI_STRINGS
 } from './i18n/translations';
-import { packSplatsForGPU, reconstructSplatsFromCaptures, SplatCloudData } from './sfm/reconstruct';
+import { packSplatsForGPU, ReconstructionError, reconstructSplatsFromCaptures, SplatCloudData } from './sfm/reconstruct';
 import { RenderMode, RendererStats, WebGPUSplatRenderer } from './webgpu/splatRenderer';
 import { exportToPlyBinary, exportToSplatBinary, importSplatFile } from './io/plySplatIo';
 
@@ -161,6 +163,7 @@ class GuidedGSplatApp {
                 <span class="section-title" id="ui-choose-mode"></span>
               </div>
               <div class="preset-grid" id="preset-cards"></div>
+              <p class="reconstruction-note" id="ui-reconstruction-note"></p>
             </div>
 
             <div class="panel-section">
@@ -204,6 +207,11 @@ class GuidedGSplatApp {
               </div>
             </div>
             <p class="camera-feedback hidden" id="camera-feedback" role="status" aria-live="polite"></p>
+            <details class="foreground-card" id="foreground-card" hidden>
+              <summary id="ui-foreground-title"></summary>
+              <p id="ui-foreground-hint"></p>
+              <canvas id="foreground-preview"></canvas>
+            </details>
 
             <div class="viewfinder-stage">
               <video id="camera-video" class="hidden" autoplay playsinline muted></video>
@@ -278,6 +286,7 @@ class GuidedGSplatApp {
         <section id="render-stage" class="stage-view">
           <div class="splat-viewport-wrap">
             <canvas id="webgpu-canvas"></canvas>
+            <div class="viewer-empty" id="viewer-empty"></div>
 
             <div class="perf-hud">
               <div class="perf-hud-title" id="ui-hud-title"></div>
@@ -439,6 +448,7 @@ class GuidedGSplatApp {
           this.selectedSlotIdx = this.lastCapturedSlotIdx;
           this.lastCapturedSlotIdx = null;
           this.domeVis.focusAngle(slot.azimuthDeg, slot.elevationDeg);
+          this.invalidateCloud();
           this.refreshAllUI();
           this.renderCurrentPreviewSlot();
         }
@@ -452,7 +462,6 @@ class GuidedGSplatApp {
         if (!uploadInput.files?.length) return;
         try {
           await this.handleUploadedPhotos(Array.from(uploadInput.files));
-          this.setCameraFeedback('');
         } catch {
           this.setCameraFeedback(this.t().photoReadError);
         } finally {
@@ -471,6 +480,8 @@ class GuidedGSplatApp {
       this.slots = buildSlotsForPreset(CAPTURE_PRESETS[this.presetId]);
       this.selectedSlotIdx = 0;
       this.lastCapturedSlotIdx = null;
+      this.invalidateCloud();
+      this.setCameraFeedback('');
       this.refreshAllUI();
       this.renderCurrentPreviewSlot();
     });
@@ -598,6 +609,7 @@ class GuidedGSplatApp {
     this.selectedSlotIdx = this.slots.find((slot) => !slot.captured)?.index ?? 0;
     const latest = this.slots.filter((slot) => slot.photo).sort((a, b) => b.photo!.timestamp - a.photo!.timestamp)[0];
     this.lastCapturedSlotIdx = latest?.index ?? null;
+    this.invalidateCloud();
     this.refreshAllUI();
     this.renderCurrentPreviewSlot();
   }
@@ -622,6 +634,14 @@ class GuidedGSplatApp {
     document.getElementById('ui-capture-help')!.textContent = s.captureHelp;
     document.getElementById('btn-preview-captures')!.textContent = s.btnPreviewCaptures;
     document.getElementById('btn-add-detail')!.textContent = s.btnAddDetail;
+    document.getElementById('ui-reconstruction-note')!.textContent = s.reconstructionNote;
+    document.getElementById('ui-foreground-title')!.textContent = s.foregroundTitle;
+    document.getElementById('ui-foreground-hint')!.textContent = s.foregroundHint;
+    const emptyViewer = document.getElementById('viewer-empty')!;
+    emptyViewer.textContent = s.emptyViewer;
+    emptyViewer.classList.toggle('hidden', !!this.currentCloud);
+    (document.getElementById('btn-export-ply') as HTMLButtonElement).disabled = !this.currentCloud;
+    (document.getElementById('btn-export-splat') as HTMLButtonElement).disabled = !this.currentCloud;
 
     const gpuDot = document.getElementById('gpu-status-dot')!;
     const gpuText = document.getElementById('gpu-status-text')!;
@@ -851,6 +871,16 @@ class GuidedGSplatApp {
 
     if (inspectedSlot && inspectedSlot.photo) {
       const p = inspectedSlot.photo;
+      const foregroundCard = document.getElementById('foreground-card') as HTMLDetailsElement;
+      foregroundCard.hidden = p.source === 'demo';
+      if (!foregroundCard.hidden) {
+        const canvas = document.getElementById('foreground-preview') as HTMLCanvasElement;
+        canvas.width = p.workWidth;
+        canvas.height = p.workHeight;
+        const cutout = new Uint8ClampedArray(p.rgba);
+        for (let i = 0; i < p.foregroundMask.length; i++) cutout[i * 4 + 3] = p.foregroundMask[i];
+        canvas.getContext('2d')!.putImageData(new ImageData(cutout, p.workWidth, p.workHeight), 0, 0);
+      }
       qcCard.classList.add(p.verdict);
       qcThumb.src = p.dataUrl;
       qcThumb.style.display = 'block';
@@ -872,6 +902,7 @@ class GuidedGSplatApp {
       this.lastCapturedSlotIdx = inspectedSlot.index;
       qcActions.style.display = 'block';
     } else {
+      (document.getElementById('foreground-card') as HTMLDetailsElement).hidden = true;
       qcThumb.style.display = 'none';
       qcTitle.textContent = s.qcWaitingTitle;
       qcDesc.textContent = s.qcWaitingDesc;
@@ -940,6 +971,20 @@ class GuidedGSplatApp {
     feedback.classList.toggle('hidden', !message);
   }
 
+  private invalidateCloud(): void {
+    this.currentCloud = null;
+    this.latestStats = null;
+    this.renderer.clearSplatCloud();
+  }
+
+  private canCapture(source: CapturedPhoto['source']): boolean {
+    if (this.slots.some(slot => slot.photo && slot.photo.source !== source)) {
+      this.setCameraFeedback(this.t().cannotMixDemo);
+      return false;
+    }
+    return true;
+  }
+
   private async toggleWebcam(): Promise<void> {
     if (this.cameraStarting) return;
     const video = document.getElementById('camera-video') as HTMLVideoElement;
@@ -957,6 +1002,8 @@ class GuidedGSplatApp {
       this.renderCurrentPreviewSlot();
       return;
     }
+
+    if (!this.canCapture('real')) return;
 
     // Keep the native camera picker available on phones without live camera support.
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -991,49 +1038,29 @@ class GuidedGSplatApp {
 
   private captureFromWebcam(): void {
     const video = document.getElementById('camera-video') as HTMLVideoElement;
-    if (!video.videoWidth) return;
-
-    const workSize = 256;
-    const off = document.createElement('canvas');
-    off.width = workSize;
-    off.height = workSize;
-    const ctx = off.getContext('2d')!;
-
-    const side = Math.min(video.videoWidth, video.videoHeight);
-    const sx = (video.videoWidth - side) * 0.5;
-    const sy = (video.videoHeight - side) * 0.5;
-    ctx.drawImage(video, sx, sy, side, side, 0, 0, workSize, workSize);
-
-    const imgData = ctx.getImageData(0, 0, workSize, workSize);
-    this.storeCaptureInSlot(this.selectedSlotIdx, imgData.data, workSize, workSize, off.toDataURL('image/jpeg', 0.88));
-    this.advanceAfterCapture();
+    if (!video.videoWidth || !this.canCapture('real')) return;
+    const image = prepareCaptureImage(video, video.videoWidth, video.videoHeight);
+    if (this.storeCaptureInSlot(this.selectedSlotIdx, image.rgba, image.width, image.height, image.dataUrl)) {
+      this.advanceAfterCapture();
+    }
   }
 
   private async handleUploadedPhotos(files: File[]): Promise<void> {
-    const workSize = 256;
-    const off = document.createElement('canvas');
-    off.width = workSize;
-    off.height = workSize;
-    const ctx = off.getContext('2d')!;
+    if (!this.canCapture('real')) return;
 
     for (const file of files) {
       const bitmap = await createImageBitmap(file);
-      const side = Math.min(bitmap.width, bitmap.height);
-      const sx = (bitmap.width - side) * 0.5;
-      const sy = (bitmap.height - side) * 0.5;
-      ctx.clearRect(0, 0, workSize, workSize);
-      ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, workSize, workSize);
-      bitmap.close();
-
-      const imgData = ctx.getImageData(0, 0, workSize, workSize);
-      this.storeCaptureInSlot(
+      let image: ReturnType<typeof prepareCaptureImage>;
+      try { image = prepareCaptureImage(bitmap, bitmap.width, bitmap.height); }
+      finally { bitmap.close(); }
+      const stored = this.storeCaptureInSlot(
         this.selectedSlotIdx,
-        imgData.data,
-        workSize,
-        workSize,
-        off.toDataURL('image/jpeg', 0.88)
+        image.rgba,
+        image.width,
+        image.height,
+        image.dataUrl
       );
-      this.advanceAfterCapture(false);
+      if (stored) this.advanceAfterCapture(false);
     }
 
     this.refreshAllUI();
@@ -1041,6 +1068,7 @@ class GuidedGSplatApp {
   }
 
   private captureSyntheticAt(slotIdx: number, advance = true): void {
+    if (!this.canCapture('demo')) return;
     const slot = this.slots[slotIdx];
     if (!slot) return;
     const preset = CAPTURE_PRESETS[this.presetId];
@@ -1052,8 +1080,8 @@ class GuidedGSplatApp {
       workSize,
       workSize
     );
-    this.storeCaptureInSlot(slotIdx, rgba, workSize, workSize, dataUrl);
-    if (advance) {
+    const stored = this.storeCaptureInSlot(slotIdx, rgba, workSize, workSize, dataUrl, 'demo');
+    if (stored && advance) {
       this.advanceAfterCapture();
     }
   }
@@ -1063,17 +1091,29 @@ class GuidedGSplatApp {
     rgba: Uint8ClampedArray,
     w: number,
     h: number,
-    dataUrl: string
-  ): void {
+    dataUrl: string,
+    source: CapturedPhoto['source'] = 'real'
+  ): boolean {
+    if (!this.canCapture(source)) return false;
     const prevPhoto =
       this.lastCapturedSlotIdx !== null && this.lastCapturedSlotIdx !== slotIdx
         ? this.slots[this.lastCapturedSlotIdx]?.photo
         : null;
 
     const qc = inspectCapturedPhoto(rgba, w, h, prevPhoto);
+    const foreground = extractForeground(rgba, w, h);
+    if (!foreground.usable && source === 'real') {
+      const message = { zh: UI_STRINGS.zh.backgroundUnclear, en: UI_STRINGS.en.backgroundUnclear };
+      qc.issues.push({ code: 'background', severity: 'bad', message });
+      qc.verdict = 'bad';
+      qc.summaryText = message;
+    }
+    this.setCameraFeedback(source === 'real' && !foreground.usable ? this.t().backgroundUnclear : '');
     const slot = this.slots[slotIdx];
 
     const photo: CapturedPhoto = {
+      source,
+      foregroundMask: foreground.mask,
       slotIndex: slotIdx,
       azimuthDeg: slot.azimuthDeg,
       elevationDeg: slot.elevationDeg,
@@ -1098,6 +1138,8 @@ class GuidedGSplatApp {
     slot.captured = true;
     slot.photo = photo;
     this.lastCapturedSlotIdx = slotIdx;
+    this.invalidateCloud();
+    return true;
   }
 
   private advanceAfterCapture(refresh = true): void {
@@ -1124,6 +1166,8 @@ class GuidedGSplatApp {
   private renderCurrentPreviewSlot(): void {
     if (this.cameraLive) return;
     const canvas = document.getElementById('preview-photo-canvas') as HTMLCanvasElement;
+    canvas.width = 512;
+    canvas.height = 512;
     const ctx = canvas.getContext('2d')!;
     const slot = this.slots[this.selectedSlotIdx];
 
@@ -1133,7 +1177,12 @@ class GuidedGSplatApp {
     // If current slot has a photo, show it; otherwise if we just took a photo on the previous slot, show a subtle split/preview or target guide
     if (slot?.photo) {
       const img = new Image();
-      img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      img.onload = () => {
+        if (this.cameraLive || this.slots[this.selectedSlotIdx]?.photo !== slot.photo) return;
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        ctx.drawImage(img, 0, 0);
+      };
       img.src = slot.photo.dataUrl;
     } else if (slot) {
       const azDesc = describeAzimuth(slot.azimuthDeg, this.locale);
@@ -1164,6 +1213,7 @@ class GuidedGSplatApp {
   }
 
   private async simulateFullDomeAndRender(): Promise<void> {
+    if (!this.canCapture('demo')) return;
     const s = this.t();
     this.setBusy(true, s.busySimTitle, '0%', 5);
     const total = this.slots.length;
@@ -1190,7 +1240,7 @@ class GuidedGSplatApp {
   private async runReconstruction(): Promise<void> {
     const capturedCount = this.slots.filter((s) => s.captured).length;
     if (capturedCount === 0) {
-      await this.simulateFullDomeAndRender();
+      this.setCameraFeedback(this.t().noPhotos);
       return;
     }
 
@@ -1198,6 +1248,8 @@ class GuidedGSplatApp {
     const preset = CAPTURE_PRESETS[this.presetId];
     this.setBusy(true, s.busyReconTitle, '...', 10);
 
+    this.invalidateCloud();
+    this.refreshStaticTexts();
     try {
       const cloud = await reconstructSplatsFromCaptures(
         this.slots,
@@ -1208,6 +1260,12 @@ class GuidedGSplatApp {
         }
       );
       this.loadCloudIntoViewer(cloud);
+    } catch (error) {
+      this.setCameraFeedback(error instanceof ReconstructionError && error.code === 'foreground'
+        ? s.backgroundUnclear : s.reconstructionFailed);
+      this.switchTab('capture');
+      this.refreshAllUI();
+      document.getElementById('camera-feedback')!.scrollIntoView({ block: 'center', behavior: 'smooth' });
     } finally {
       this.setBusy(false);
     }
