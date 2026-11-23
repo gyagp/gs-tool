@@ -232,7 +232,7 @@ class GuidedGSplatApp {
                 <button class="btn" id="btn-shutter"></button>
                 <label class="btn btn-primary btn-shutter-big" id="video-capture-label">
                   <span id="ui-video-capture"></span>
-                  <input type="file" id="input-capture-video" accept="video/*" capture="environment" hidden />
+                  <input type="file" id="input-capture-video" accept="video/*" hidden />
                 </label>
                 <label class="btn">
                   <span id="ui-upload-btn"></span>
@@ -242,6 +242,10 @@ class GuidedGSplatApp {
             </div>
 
             <div class="capture-tools">
+              <label class="btn" id="video-record-label">
+                <span id="ui-video-record"></span>
+                <input type="file" id="input-record-video" accept="video/*" capture="environment" hidden />
+              </label>
               <button class="btn" id="btn-toggle-webcam"></button>
               <label class="btn" id="native-camera-label">
                 <span id="ui-native-camera"></span>
@@ -488,21 +492,26 @@ class GuidedGSplatApp {
       });
     }
 
-    const videoInput = document.getElementById('input-capture-video') as HTMLInputElement;
-    document.getElementById('video-capture-label')!.addEventListener('click', event => {
-      if (this.cameraStarting || this.slots.some(slot => slot.photo)) {
-        event.preventDefault();
-        this.setCameraFeedback(this.t().videoNeedsEmptySession);
-      } else if (this.cameraLive) {
-        void this.toggleWebcam();
-      }
-    });
-    videoInput.addEventListener('change', async () => {
-      const file = videoInput.files?.[0];
-      if (!file) return;
-      try { await this.handleVideo(file); }
-      finally { videoInput.value = ''; }
-    });
+    for (const [labelId, inputId] of [
+      ['video-capture-label', 'input-capture-video'],
+      ['video-record-label', 'input-record-video']
+    ]) {
+      const videoInput = document.getElementById(inputId) as HTMLInputElement;
+      document.getElementById(labelId)!.addEventListener('click', event => {
+        if (this.cameraStarting || this.slots.some(slot => slot.photo)) {
+          event.preventDefault();
+          this.setCameraFeedback(this.t().videoNeedsEmptySession);
+        } else if (this.cameraLive) {
+          void this.toggleWebcam();
+        }
+      });
+      videoInput.addEventListener('change', async () => {
+        const file = videoInput.files?.[0];
+        if (!file) return;
+        try { await this.handleVideo(file); }
+        finally { videoInput.value = ''; }
+      });
+    }
     document.getElementById('btn-cancel-video')!.addEventListener('click', () => this.videoAbortController?.abort());
 
     // 1-Click Full Demo
@@ -669,6 +678,7 @@ class GuidedGSplatApp {
     document.getElementById('ui-capture-help')!.textContent = s.captureHelp;
     document.getElementById('ui-video-hint')!.textContent = s.videoHint;
     document.getElementById('ui-video-capture')!.textContent = s.btnVideoCapture;
+    document.getElementById('ui-video-record')!.textContent = s.btnVideoRecord;
     document.getElementById('btn-cancel-video')!.textContent = s.btnCancelVideo;
     document.getElementById('btn-preview-captures')!.textContent = s.btnPreviewCaptures;
     document.getElementById('btn-add-detail')!.textContent = s.btnAddDetail;
