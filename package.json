@@ -6,12 +6,15 @@
   "scripts": {
     "test": "node --test tests/capture-regression.test.mjs",
     "test:video": "node tests/video-detail.browser.mjs",
+    "test:model": "node tests/trained-model.browser.mjs",
+    "test:model-quality": "node tests/model-quality.browser.mjs",
     "dev": "node scripts/prepare-inference.mjs && vite",
     "build": "node scripts/prepare-inference.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
+    "@types/three": "^0.180.0",
     "@webgpu/types": "^0.1.52",
     "playwright-core": "^1.65.1",
     "typescript": "^5.7.2",
@@ -19,6 +22,8 @@
     "wrangler": "^4.16.0"
   },
   "dependencies": {
-    "onnxruntime-web": "^1.23.2"
+    "@sparkjsdev/spark": "^2.4.0",
+    "onnxruntime-web": "^1.23.2",
+    "three": "^0.187.0"
   }
 }

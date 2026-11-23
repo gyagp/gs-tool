@@ -41,7 +41,8 @@ class GuidedGSplatApp {
   private videoAbortController: AbortController | null = null;
   private roundBottle = true;
   private videoDetail = true;
-  private cloudMethod: 'bottle' | 'hull' | null = null;
+  private cloudMethod: 'bottle' | 'hull' | 'import' | null = null;
+  private importedSource: File | null = null;
 
   private domeVis!: CaptureDomeVisualizer;
   private renderer!: WebGPUSplatRenderer;
@@ -198,6 +199,11 @@ class GuidedGSplatApp {
           <!-- Center Column: Step-by-Step Coach + Viewfinder + Instant Shot Quality Inspector + Filmstrip -->
           <div class="viewfinder-col">
             <p class="video-capture-hint" id="ui-video-hint"></p>
+            <details class="foreground-card">
+              <summary id="ui-quality-title"></summary>
+              <p id="ui-quality-hint"></p>
+              <a class="btn" id="ui-quality-guide" href="https://github.com/gyagp/gs-tool/blob/main/docs/local-reconstruction.md" target="_blank" rel="noopener"></a>
+            </details>
             <div class="video-import-options">
               <label class="bottle-mode-option"><input type="checkbox" id="input-round-bottle" checked /><span id="ui-round-bottle"></span></label>
               <label class="bottle-mode-option"><input type="checkbox" id="input-video-detail" checked /><span id="ui-video-detail"></span></label>
@@ -603,6 +609,9 @@ class GuidedGSplatApp {
 
     document.getElementById('btn-export-ply')!.addEventListener('click', () => {
       if (!this.currentCloud) return;
+      if (this.importedSource?.name.toLowerCase().endsWith('.ply')) {
+        this.downloadBlob(this.importedSource, this.importedSource.name); return;
+      }
       this.downloadBlob(exportToPlyBinary(this.currentCloud), `3dgs-model-${this.currentCloud.count}.ply`);
     });
 
@@ -619,7 +628,14 @@ class GuidedGSplatApp {
       try {
         await new Promise((r) => setTimeout(r, 20));
         const cloud = await importSplatFile(file);
-        this.loadCloudIntoViewer(cloud);
+        this.loadCloudIntoViewer(cloud, 'import');
+        this.importedSource = file;
+        try { await this.renderer.loadImportedSource(file); }
+        catch (error) {
+          console.warn('Full Gaussian renderer unavailable:', error);
+          alert(this.t().importFallback);
+        }
+        this.refreshStaticTexts();
       } catch (err) {
         alert(`${(err as Error).message}`);
       } finally {
@@ -683,6 +699,9 @@ class GuidedGSplatApp {
     document.getElementById('ui-capture-settings')!.textContent = s.captureSettings;
     document.getElementById('ui-capture-help')!.textContent = s.captureHelp;
     document.getElementById('ui-video-hint')!.textContent = s.videoHint;
+    document.getElementById('ui-quality-title')!.textContent = s.qualityTitle;
+    document.getElementById('ui-quality-hint')!.textContent = s.qualityHint;
+    document.getElementById('ui-quality-guide')!.textContent = s.qualityGuide;
     document.getElementById('ui-video-capture')!.textContent = s.btnVideoCapture;
     document.getElementById('ui-video-record')!.textContent = s.btnVideoRecord;
     document.getElementById('btn-cancel-video')!.textContent = s.btnCancelVideo;
@@ -692,7 +711,7 @@ class GuidedGSplatApp {
     document.getElementById('ui-round-bottle')!.textContent = s.roundBottleOption;
     document.getElementById('ui-video-detail')!.textContent = s.videoDetailOption;
     const method = document.getElementById('viewer-method')!;
-    method.textContent = this.cloudMethod === 'bottle' ? s.roundBottleResult : s.hullResult;
+    method.textContent = this.cloudMethod === 'import' ? (this.renderer.usesImportedGaussians ? s.importResult : s.importFallback) : this.cloudMethod === 'bottle' ? s.roundBottleResult : s.hullResult;
     method.classList.toggle('hidden', !this.currentCloud || !this.cloudMethod);
     document.getElementById('ui-foreground-title')!.textContent = s.foregroundTitle;
     document.getElementById('ui-foreground-hint')!.textContent = s.foregroundHint;
@@ -700,7 +719,8 @@ class GuidedGSplatApp {
     emptyViewer.textContent = s.emptyViewer;
     emptyViewer.classList.toggle('hidden', !!this.currentCloud);
     (document.getElementById('btn-export-ply') as HTMLButtonElement).disabled = !this.currentCloud;
-    (document.getElementById('btn-export-splat') as HTMLButtonElement).disabled = !this.currentCloud;
+    // The compact format cannot preserve higher-order spherical harmonics.
+    (document.getElementById('btn-export-splat') as HTMLButtonElement).disabled = !this.currentCloud || !!this.importedSource;
 
     const gpuDot = document.getElementById('gpu-status-dot')!;
     const gpuText = document.getElementById('gpu-status-text')!;
@@ -757,7 +777,7 @@ class GuidedGSplatApp {
     document.querySelectorAll<HTMLElement>('#render-mode-group [data-rmode]').forEach(button => {
       button.classList.toggle('active', Number(button.dataset.rmode) === this.renderer.renderMode);
     });
-    const texturedSurface = this.renderer.usesTexturedSurface;
+    const texturedSurface = this.renderer.usesTexturedSurface || this.renderer.usesImportedGaussians;
     for (const id of ['slider-scale', 'slider-cull', 'btn-toggle-grid']) {
       (document.getElementById(id) as HTMLInputElement | HTMLButtonElement).disabled = texturedSurface;
     }
@@ -1027,17 +1047,20 @@ class GuidedGSplatApp {
     document.getElementById('stat-fps')!.textContent = `${st.fps} FPS (${st.frameTimeMs.toFixed(1)} ms)`;
     document.getElementById('stat-total')!.textContent = st.totalSplats.toLocaleString();
     const surface = this.renderer.usesTexturedSurface;
+    const imported = this.renderer.usesImportedGaussians;
     for (const id of ['slider-scale', 'slider-cull', 'btn-toggle-grid']) {
-      (document.getElementById(id) as HTMLInputElement | HTMLButtonElement).disabled = surface;
+      (document.getElementById(id) as HTMLInputElement | HTMLButtonElement).disabled = surface || imported;
     }
     if (this.cloudMethod === 'bottle' && this.currentCloud?.surface) {
       document.getElementById('viewer-method')!.textContent = this.renderer.renderMode === 0 && !surface ? s.textureFallback : s.roundBottleResult;
     }
-    document.getElementById('gpu-status-text')!.textContent = surface ? 'WebGL2' : this.webgpuSupported ? s.gpuReady : s.gpuFallback;
-    document.getElementById('gpu-status-dot')!.classList.toggle('warn', !surface && !this.webgpuSupported);
-    document.getElementById('stat-visible')!.textContent = surface ? this.t().modeTexture : `${st.visibleSplats.toLocaleString()} (-${st.culledPct}% ${s.culledSuffix})`;
-    document.getElementById('stat-sort')!.textContent = surface ? '—' : st.sortSkipped ? s.sortCached : s.sortActive;
-    document.getElementById('stat-vram')!.textContent = `${st.vramMB.toFixed(1)} MB`;
+    if (this.cloudMethod === 'import') document.getElementById('viewer-method')!.textContent = imported
+      ? (this.renderer.importedContextLost ? s.importContextLost : s.importResult) : s.importFallback;
+    document.getElementById('gpu-status-text')!.textContent = surface || imported ? 'WebGL2' : this.webgpuSupported ? s.gpuReady : s.gpuFallback;
+    document.getElementById('gpu-status-dot')!.classList.toggle('warn', !(surface || imported || this.webgpuSupported));
+    document.getElementById('stat-visible')!.textContent = imported ? '—' : surface ? this.t().modeTexture : `${st.visibleSplats.toLocaleString()} (-${st.culledPct}% ${s.culledSuffix})`;
+    document.getElementById('stat-sort')!.textContent = surface || imported ? '—' : st.sortSkipped ? s.sortCached : s.sortActive;
+    document.getElementById('stat-vram')!.textContent = imported ? '—' : `${st.vramMB.toFixed(1)} MB`;
   }
 
   private setCameraFeedback(message: string): void {
@@ -1047,6 +1070,7 @@ class GuidedGSplatApp {
   }
 
   private invalidateCloud(): void {
+    this.importedSource = null;
     this.currentCloud = null;
     this.cloudMethod = null;
     this.latestStats = null;
@@ -1408,7 +1432,8 @@ class GuidedGSplatApp {
     }
   }
 
-  private loadCloudIntoViewer(cloud: SplatCloudData, method: 'bottle' | 'hull' | null = null): void {
+  private loadCloudIntoViewer(cloud: SplatCloudData, method: 'bottle' | 'hull' | 'import' | null = null): void {
+    this.importedSource = null;
     this.currentCloud = cloud;
     this.cloudMethod = method;
     this.renderer.setSplatCloud(cloud);

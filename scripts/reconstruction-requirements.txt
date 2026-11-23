@@ -1,0 +1,5 @@
+numpy==2.2.1
+opencv-python==4.13.0.92
+pycolmap==4.2.1
+scipy==1.18.1
+onnxruntime==1.32.0

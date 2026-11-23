@@ -17,6 +17,7 @@ import {
 } from '../math/mat4';
 import { SplatCloudData } from '../sfm/reconstruct';
 import { SurfaceRenderer } from './surfaceRenderer';
+import type { ImportedRenderer } from './importedRenderer';
 import {
   GRID_WGSL,
   INDIRECT_ARGS_WGSL,
@@ -33,7 +34,7 @@ import {
 export type RenderMode = 0 | 1 | 2 | 3;
 
 export interface RendererStats {
-  backend: 'WebGPU (Indirect Compute + 4-Bit Radix)' | 'Canvas2D Fallback' | 'WebGL2 Textured Surface';
+  backend: 'WebGPU (Indirect Compute + 4-Bit Radix)' | 'Canvas2D Fallback' | 'WebGL2 Textured Surface' | 'WebGL2 Gaussian Splatting';
   fps: number;
   frameTimeMs: number;
   totalSplats: number;
@@ -52,6 +53,11 @@ function floatBits(v: number): number {
 
 export class WebGPUSplatRenderer {
   private surfaceRenderer: SurfaceRenderer;
+  private importedRenderer?: ImportedRenderer;
+  private importGeneration = 0;
+  private importedFile?: File;
+  public get usesImportedGaussians() { return this.renderMode === 0 && !!this.importedRenderer; }
+  public get importedContextLost() { return this.importedRenderer?.contextLost ?? false; }
   public get usesTexturedSurface() { return this.renderMode === 0 && this.surfaceRenderer.ready; }
   private canvas: HTMLCanvasElement;
   private device: GPUDevice | null = null;
@@ -146,6 +152,9 @@ export class WebGPUSplatRenderer {
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.surfaceRenderer = new SurfaceRenderer(canvas.parentElement!);
+    canvas.parentElement!.addEventListener('modelreload', () => {
+      if (this.importedFile) void this.loadImportedSource(this.importedFile).catch(console.error);
+    });
     this.bindInteraction();
   }
 
@@ -527,6 +536,7 @@ export class WebGPUSplatRenderer {
   }
 
   public clearSplatCloud(): void {
+    this.clearImportedSource();
     this.surfaceRenderer.clear();
     this.currentCloud = null;
     this.splatCount = 0;
@@ -536,6 +546,7 @@ export class WebGPUSplatRenderer {
   }
 
   public setSplatCloud(cloud: SplatCloudData): void {
+    this.clearImportedSource();
     this.surfaceRenderer.setSurface(cloud.surface);
     this.currentCloud = cloud;
     this.splatCount = cloud.count;
@@ -563,6 +574,25 @@ export class WebGPUSplatRenderer {
   public markDirty(): void {
     this.dirtySort = true;
     this.lastCameraSignature = '';
+  }
+
+  private clearImportedSource(): void {
+    this.importGeneration++;
+    this.importedFile = undefined;
+    this.importedRenderer?.dispose(); this.importedRenderer = undefined;
+  }
+
+  public async loadImportedSource(file: File): Promise<void> {
+    this.clearImportedSource();
+    const generation = this.importGeneration;
+    const { ImportedRenderer } = await import('./importedRenderer');
+    if (generation !== this.importGeneration) return;
+    const renderer = new ImportedRenderer(this.canvas.parentElement!);
+    try {
+      await renderer.load(file);
+      if (generation !== this.importGeneration) { renderer.dispose(); return; }
+      this.importedRenderer = renderer; this.importedFile = file;
+    } catch (error) { renderer.dispose(); throw error; }
   }
 
   public resetCamera(): void {
@@ -619,6 +649,16 @@ export class WebGPUSplatRenderer {
     const fovRad = (this.fovDeg * Math.PI) / 180;
     mat4PerspectiveZO(fovRad, width / height, 0.08, 40.0, this.projMat);
     mat4Multiply(this.projMat, this.viewMat, this.vpMat);
+
+    if (this.renderMode === 0 && this.importedRenderer) {
+      this.surfaceRenderer.hide();
+      this.importedRenderer.render(eye, this.target, this.fovDeg, width, height);
+      this.frameCounter++;
+      if (this.frameCounter % 15 === 0) this.onStats?.({ backend: 'WebGL2 Gaussian Splatting', fps: Math.round(this.smoothedFps), frameTimeMs: this.smoothedMs,
+        totalSplats: this.importedRenderer.count, visibleSplats: this.importedRenderer.count, culledPct: 0, sortSkipped: false, vramMB: 0 });
+      return;
+    }
+    this.importedRenderer?.hide();
 
     // Both projection helpers use [0,1] clip depth; remap to WebGL's [-1,1].
     if (this.currentCloud?.surface && this.renderMode === 0) {

@@ -6,3 +6,5 @@ dist/
 *.local
 public/inference/
 artifacts/
+__pycache__/
+*.pyc
