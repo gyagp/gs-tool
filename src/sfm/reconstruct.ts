@@ -47,7 +47,7 @@ interface PreparedCameraView {
 }
 
 export class ReconstructionError extends Error {
-  constructor(public readonly code: 'foreground' | 'geometry') {
+  constructor(public readonly code: 'foreground' | 'geometry' | 'views') {
     super(code);
     this.name = 'ReconstructionError';
   }
@@ -203,8 +203,14 @@ export async function reconstructSplatsFromCaptures(
   onProgress?.('Separating foreground & aligning approximate guided views...', 12);
   await new Promise((r) => setTimeout(r, 10));
 
-  const views: PreparedCameraView[] = capturedSlots
-    .filter((s) => s.captured && s.photo)
+  const captured = capturedSlots.filter(s => s.captured && s.photo);
+  const angles = [...new Set(captured.map(slot => slot.azimuthDeg))].sort((a, b) => a - b);
+  const maxGap = angles.length < 2 ? 360 : Math.max(...angles.map((angle, i) =>
+    (i + 1 < angles.length ? angles[i + 1] : angles[0] + 360) - angle
+  ));
+  if (captured.length < 4 || maxGap > 150) throw new ReconstructionError('views');
+
+  const views: PreparedCameraView[] = captured
     .map((slot) => {
       const pixels = prepareReconstructionPixels(slot);
       const view = mat4LookAt(slot.position, [0, 0.05, 0], [0, 1, 0]);

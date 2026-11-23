@@ -13,9 +13,9 @@ export function extractForeground(rgba: Uint8ClampedArray, width: number, height
     const p = (y * width + x) * 4;
     samples.push([rgba[p], rgba[p + 1], rgba[p + 2]]);
   };
-  const step = Math.max(1, Math.floor(Math.min(width, height) / 32));
-  for (let x = 0; x < width; x += step) { sample(x, 0); sample(x, height - 1); }
-  for (let y = 0; y < height; y += step) { sample(0, y); sample(width - 1, y); }
+  // Include thin backdrop/table transition rows introduced by video compression.
+  for (let x = 0; x < width; x++) { sample(x, 0); sample(x, height - 1); }
+  for (let y = 0; y < height; y++) { sample(0, y); sample(width - 1, y); }
 
   // Several border colors handle a backdrop/table seam without averaging it into a false color.
   const centers = [samples[0].slice()];

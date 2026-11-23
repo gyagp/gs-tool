@@ -10,7 +10,7 @@ const bundle = await build({
 });
 const api = await import(`data:text/javascript;base64,${Buffer.from(bundle.output[0].code).toString('base64')}`);
 const { extractForeground, getCaptureDimensions, CAPTURE_PRESETS, buildSlotsForPreset,
-  evaluateCoverage, reconstructSplatsFromCaptures, ReconstructionError } = api;
+  evaluateCoverage, reconstructSplatsFromCaptures, ReconstructionError, selectDistinctFrame } = api;
 
 function bottlePixels() {
   const width = 160, height = 288;
@@ -67,6 +67,17 @@ test('blank photos do not receive an invented ellipse or substitute sphere', asy
   await assert.rejects(reconstructSplatsFromCaptures(slots, 48, 'standard'), error => error instanceof ReconstructionError && error.code === 'foreground');
 });
 
+test('a thin blended backdrop seam does not attach the bottle to the frame edges', () => {
+  const { rgba, width, height } = bottlePixels();
+  for (let x = 0; x < width; x++) {
+    if (Math.abs(x - 80) > 27) rgba.set([105, 95, 95, 255], (224 * width + x) * 4);
+  }
+  const foreground = extractForeground(rgba, width, height);
+  assert.equal(foreground.usable, true);
+  assert.equal(foreground.mask[224 * width + 20], 0);
+  assert.equal(foreground.mask[224 * width + 80], 255);
+});
+
 test('eight bottle silhouettes produce an elongated surface inside the volume, not a solid cube', async () => {
   const cloud = await reconstructSplatsFromCaptures(capturedBottleSlots(), 48, 'standard');
   assert.ok(cloud.count > 100);
@@ -104,4 +115,34 @@ test('eight unusable photos do not announce that the capture is ready', () => {
   const report = evaluateCoverage(CAPTURE_PRESETS.minimal, slots, 0, 'en');
   assert.equal(report.isReadyToRender, false);
   assert.match(report.missingSummaryText, /retaking/);
+});
+
+test('video keyframes prioritize quality while rejecting repeated views and near-identical noise', () => {
+  const frame = (value, score, time) => ({ bin: 0, fingerprint: new Uint8Array(24).fill(value), score, time });
+  const previous = frame(40, 80, 1);
+  const duplicate = frame(41, 100, 2);
+  const clearer = frame(90, 90, 3);
+  const blurry = frame(120, 25, 4);
+  assert.equal(selectDistinctFrame([duplicate, blurry, clearer], [previous]), clearer);
+  assert.equal(selectDistinctFrame([duplicate], [previous]), null);
+  assert.equal(selectDistinctFrame([blurry, clearer], []), clearer);
+});
+
+test('six distinct video sectors can preview without pretending a top ring was filmed', () => {
+  const slots = buildSlotsForPreset(CAPTURE_PRESETS.video);
+  const photo = capturedBottleSlots()[0].photo;
+  slots.slice(0, 6).forEach(slot => { slot.captured = true; slot.photo = { ...photo, slotIndex: slot.index }; });
+  const report = evaluateCoverage(CAPTURE_PRESETS.video, slots, 0, 'en');
+  assert.equal(report.isReadyToRender, true);
+  assert.equal(report.minimumViableCount, 6);
+  assert.equal(report.topRingCapturedCount, 0);
+  assert.equal(report.ringProgress.length, 1);
+  assert.ok(slots.every(slot => slot.elevationDeg === 0));
+});
+
+test('one view or views from only one side never become an extruded solid', async () => {
+  const slots = capturedBottleSlots();
+  for (const views of [slots.slice(0, 1), slots.slice(0, 4).map((slot, i) => ({ ...slot, azimuthDeg: i * 20 }))]) {
+    await assert.rejects(reconstructSplatsFromCaptures(views, 48, 'standard'), error => error instanceof ReconstructionError && error.code === 'views');
+  }
 });

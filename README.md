@@ -23,6 +23,8 @@ The built-in photo reconstruction is an **experimental visual-hull approximation
 
 ### Mobile Capture / 手机拍摄
 
+- **录制 / 导入环绕视频 / Record / Import Orbit Video** is the primary mobile action. Fix the bottle in place and walk one full orbit at a steady height, distance, and speed (10–20 seconds recommended; 2–90 seconds accepted). Processing stays on the device. Eight temporal sections provide 48 candidate frames; focus, exposure, foreground quality, and normalized subject-image similarity select up to eight distinct keyframes. Six usable sectors trigger an approximate preview; fewer frames remain available for inspection and manual completion. Stationary or repeated footage is not padded with duplicate frames.
+- Video camera directions assume a uniform full orbit. They are **not recovered camera poses**, and image differences do not prove new viewing angles or a complete orbit. Video import does not add SfM or 3DGS training; same-height footage does not capture overhead views. Cancel processing with the on-screen button. Browser codec support varies; MP4 / WebM are suggested. Existing captures must be explicitly cleared before starting a video session.
 - The mobile capture page keeps the viewfinder first and the capture controls fixed above the phone's bottom safe area. Settings, coverage, and shooting tips expand on demand.
 - Tap **开启相机拍摄 / Open Camera**, allow camera access, then tap **拍下当前角度 / Take Photo** for each guided angle. Live preview requires HTTPS (or localhost).
 - **系统相机拍照 / System Camera** opens the phone's native camera picker where supported; **从相册添加 / Add Photos** imports existing photos. Browsers decide whether to offer a camera or file picker.

@@ -7,7 +7,7 @@
 import { sphericalToCartesian, Vec3 } from '../math/mat4';
 import { Locale, OCTANT_LABELS } from '../i18n/translations';
 
-export type CapturePresetId = 'minimal' | 'express' | 'standard' | 'studio';
+export type CapturePresetId = 'minimal' | 'video' | 'express' | 'standard' | 'studio';
 export type ShotVerdict = 'good' | 'warn' | 'bad';
 
 export interface RingSpec {
@@ -24,6 +24,7 @@ export interface CapturePreset {
   name: Record<Locale, string>;
   badge: Record<Locale, string>;
   totalPhotos: number;
+  minimumPhotos?: number;
   recommendedFovDeg: number;
   angularStepDeg: number;
   estimatedOverlapPct?: number;
@@ -48,6 +49,7 @@ export interface ShotIssue {
 }
 
 export interface CapturedPhoto {
+  videoTimeSeconds?: number;
   source: 'real' | 'demo';
   foregroundMask: Uint8Array;
   slotIndex: number;
@@ -106,6 +108,24 @@ export interface CoverageReport {
 }
 
 export const CAPTURE_PRESETS: Record<CapturePresetId, CapturePreset> = {
+  video: {
+    id: 'video',
+    name: { zh: '视频环绕采集', en: 'Orbit Video' },
+    badge: { zh: '6–8 个关键帧 · 1 圈', en: '6–8 Keyframes · 1 Ring' },
+    totalPhotos: 8,
+    minimumPhotos: 6,
+    recommendedFovDeg: 48,
+    angularStepDeg: 45,
+    useCase: {
+      zh: '固定瓶子、保持高度和距离，缓慢绕完整一圈。视频按时间均匀选帧并估算方向，不能代替真实相机姿态估计；顶面细节有限。',
+      en: 'Keep the bottle fixed and orbit once at a steady height, distance and speed. Frames are sampled across time; directions are estimates, not measured camera poses. Top detail is limited.'
+    },
+    rings: [{
+      id: 'equator', count: 8, elevationDeg: 0,
+      label: { zh: '视频水平环绕（方向估算）', en: 'Level Video Orbit (Estimated Directions)' },
+      purpose: { zh: '用完整一圈视频的 8 段时间覆盖瓶身四周，保留清晰且不同的画面。', en: 'Choose clear, distinct views from eight temporal sections of a full orbit.' }
+    }]
+  },
   minimal: {
     id: 'minimal',
     name: { zh: '8 张极速预览（默认）', en: '8-Shot Preview (Default)' },
@@ -563,7 +583,7 @@ export function evaluateCoverage(
 
   const requiredCount = slots.length;
   const completionPct = Math.round((capturedCount / Math.max(1, requiredCount)) * 100);
-  const minimumViableCount = Math.max(8, Math.ceil(requiredCount * 0.5));
+  const minimumViableCount = preset.minimumPhotos ?? Math.max(8, Math.ceil(requiredCount * 0.5));
 
   const ringProgress = preset.rings.map((ring) => {
     const rSlots = slots.filter((s) => s.ringId === ring.id);
@@ -601,7 +621,7 @@ export function evaluateCoverage(
 
   const topSlots = slots.filter((s) => s.elevationDeg >= 30);
   const topCaptured = topSlots.filter((s) => s.captured).length;
-  const topRingCovered = topCaptured >= 3;
+  const topRingCovered = topSlots.length === 0 || topCaptured >= 3;
   const firstMissingTopSlotIndex = topSlots.find((s) => !s.captured)?.index ?? 0;
 
   // Sequential walking order so the user walks naturally around each ring one step at a time
@@ -625,7 +645,9 @@ export function evaluateCoverage(
   let missingSummaryText = '';
   if (locale === 'zh') {
     if (capturedCount === 0) {
-      missingSummaryText = `当前方案推荐 ${requiredCount} 张：按引导拍四周和顶部，可先预览，再按需补拍。`;
+      missingSummaryText = preset.id === 'video'
+        ? '录制完整一圈视频，自动选取 6–8 个关键帧。方向为估算值，顶部不在这次采集范围内。'
+        : `当前方案推荐 ${requiredCount} 张：按引导拍四周和顶部，可先预览，再按需补拍。`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
         badCount > 0
@@ -653,7 +675,9 @@ export function evaluateCoverage(
     }
   } else {
     if (capturedCount === 0) {
-      missingSummaryText = `This plan recommends ${requiredCount} side and top views. Preview first, then add angles if needed.`;
+      missingSummaryText = preset.id === 'video'
+        ? 'Record one full orbit for 6–8 keyframes. Directions are estimates; top views are not included.'
+        : `This plan recommends ${requiredCount} side and top views. Preview first, then add angles if needed.`;
     } else if (uncaptured.length === 0) {
       missingSummaryText =
         badCount > 0

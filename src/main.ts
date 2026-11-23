@@ -13,6 +13,7 @@ import { CaptureDomeVisualizer } from './capture/domeVisualizer';
 import { renderSyntheticCaptureView } from './capture/syntheticSubject';
 import { extractForeground } from './capture/foreground';
 import { prepareCaptureImage } from './capture/photoProcessing';
+import { extractVideoFrames, VideoFrameError } from './capture/videoFrames';
 import {
   describeAzimuth,
   describeElevation,
@@ -36,6 +37,7 @@ class GuidedGSplatApp {
   private stream: MediaStream | null = null;
   private cameraLive = false;
   private cameraStarting = false;
+  private videoAbortController: AbortController | null = null;
 
   private domeVis!: CaptureDomeVisualizer;
   private renderer!: WebGPUSplatRenderer;
@@ -191,6 +193,7 @@ class GuidedGSplatApp {
 
           <!-- Center Column: Step-by-Step Coach + Viewfinder + Instant Shot Quality Inspector + Filmstrip -->
           <div class="viewfinder-col">
+            <p class="video-capture-hint" id="ui-video-hint"></p>
             <div class="coach-banner">
               <div>
                 <span class="coach-step-tag" id="coach-badge"></span>
@@ -222,11 +225,11 @@ class GuidedGSplatApp {
 
             <div class="shutter-bar">
               <div class="shutter-group">
-                <label class="btn" id="native-camera-label">
-                  <span id="ui-native-camera"></span>
-                  <input type="file" id="input-camera-photo" accept="image/*" capture="environment" hidden />
+                <button class="btn" id="btn-shutter"></button>
+                <label class="btn btn-primary btn-shutter-big" id="video-capture-label">
+                  <span id="ui-video-capture"></span>
+                  <input type="file" id="input-capture-video" accept="video/*" capture="environment" hidden />
                 </label>
-                <button class="btn btn-primary btn-shutter-big" id="btn-shutter"></button>
                 <label class="btn">
                   <span id="ui-upload-btn"></span>
                   <input type="file" id="input-upload-photos" accept="image/*" multiple hidden />
@@ -236,6 +239,10 @@ class GuidedGSplatApp {
 
             <div class="capture-tools">
               <button class="btn" id="btn-toggle-webcam"></button>
+              <label class="btn" id="native-camera-label">
+                <span id="ui-native-camera"></span>
+                <input type="file" id="input-camera-photo" accept="image/*" capture="environment" hidden />
+              </label>
               <button class="btn" id="btn-clear-captures"></button>
             </div>
             <!-- Real-time Newly Captured Photo Quality Inspector -->
@@ -385,6 +392,7 @@ class GuidedGSplatApp {
           <div class="progress-track" style="height:7px;">
             <div class="progress-fill" id="busy-bar" style="width:15%"></div>
           </div>
+          <button class="btn" id="btn-cancel-video" style="margin-top:12px;" hidden></button>
         </div>
       </div>
     `;
@@ -469,6 +477,23 @@ class GuidedGSplatApp {
         }
       });
     }
+
+    const videoInput = document.getElementById('input-capture-video') as HTMLInputElement;
+    document.getElementById('video-capture-label')!.addEventListener('click', event => {
+      if (this.cameraStarting || this.slots.some(slot => slot.photo)) {
+        event.preventDefault();
+        this.setCameraFeedback(this.t().videoNeedsEmptySession);
+      } else if (this.cameraLive) {
+        void this.toggleWebcam();
+      }
+    });
+    videoInput.addEventListener('change', async () => {
+      const file = videoInput.files?.[0];
+      if (!file) return;
+      try { await this.handleVideo(file); }
+      finally { videoInput.value = ''; }
+    });
+    document.getElementById('btn-cancel-video')!.addEventListener('click', () => this.videoAbortController?.abort());
 
     // 1-Click Full Demo
     document.getElementById('btn-synth-all')!.addEventListener('click', async () => {
@@ -632,6 +657,9 @@ class GuidedGSplatApp {
     document.getElementById('ui-import-short')!.textContent = s.importShort;
     document.getElementById('ui-capture-settings')!.textContent = s.captureSettings;
     document.getElementById('ui-capture-help')!.textContent = s.captureHelp;
+    document.getElementById('ui-video-hint')!.textContent = s.videoHint;
+    document.getElementById('ui-video-capture')!.textContent = s.btnVideoCapture;
+    document.getElementById('btn-cancel-video')!.textContent = s.btnCancelVideo;
     document.getElementById('btn-preview-captures')!.textContent = s.btnPreviewCaptures;
     document.getElementById('btn-add-detail')!.textContent = s.btnAddDetail;
     document.getElementById('ui-reconstruction-note')!.textContent = s.reconstructionNote;
@@ -786,12 +814,12 @@ class GuidedGSplatApp {
 
     sectorGrid.innerHTML =
       sectorButtons +
-      `
+      (preset.rings.some(ring => ring.elevationDeg >= 30) ? `
       <button class="sector-pill top-span ${topCls}" data-jump="${report.firstMissingTopSlotIndex}">
         <span>${s.topCapLabel}</span>
         <span>${topStatus}</span>
       </button>
-    `;
+    ` : '');
 
     sectorGrid.querySelectorAll('.sector-pill').forEach((pill) => {
       pill.addEventListener('click', () => {
@@ -828,7 +856,7 @@ class GuidedGSplatApp {
     // Reconstruct Button
     const reconBtn = document.getElementById('btn-reconstruct')!;
     reconBtn.textContent = report.isReadyToRender ? s.generateBtnReady : s.generateBtnEarly;
-    document.getElementById('ui-generate-hint')!.textContent = s.generateHintMin(
+    document.getElementById('ui-generate-hint')!.textContent = this.presetId === 'video' ? s.videoPlanHint : s.generateHintMin(
       report.minimumViableCount,
       report.capturedCount,
       report.isReadyToRender
@@ -929,7 +957,7 @@ class GuidedGSplatApp {
         return `
           <div class="thumb-slot ${vCls} ${selCls}" data-slot="${slot.index}">
             ${inner}
-            <div class="thumb-label">${Math.round(slot.azimuthDeg)}°/${slot.elevationDeg}°</div>
+            <div class="thumb-label">${slot.photo?.videoTimeSeconds !== undefined ? '≈' : ''}${Math.round(slot.azimuthDeg)}°/${slot.elevationDeg}°</div>
           </div>
         `;
       })
@@ -1065,6 +1093,51 @@ class GuidedGSplatApp {
 
     this.refreshAllUI();
     this.renderCurrentPreviewSlot();
+  }
+
+  private async handleVideo(file: File): Promise<void> {
+    if (this.videoAbortController || this.slots.some(slot => slot.photo)) {
+      this.setCameraFeedback(this.t().videoNeedsEmptySession);
+      return;
+    }
+    const controller = new AbortController();
+    this.videoAbortController = controller;
+    const cancelButton = document.getElementById('btn-cancel-video') as HTMLButtonElement;
+    cancelButton.hidden = false;
+    this.setCameraFeedback('');
+    this.setBusy(true, this.t().videoBusyTitle, '0 / 48', 0);
+    try {
+      const result = await extractVideoFrames(file, controller.signal, (completed, total) => {
+        this.setBusy(true, this.t().videoBusyTitle, `${completed} / ${total}`, Math.round(completed / total * 100));
+      });
+      if (controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      this.presetId = 'video';
+      this.slots = buildSlotsForPreset(CAPTURE_PRESETS.video);
+      this.lastCapturedSlotIdx = null;
+      for (const frame of result.frames) {
+        const { image } = frame;
+        if (this.storeCaptureInSlot(frame.bin, image.rgba, image.width, image.height, image.dataUrl)) {
+          this.slots[frame.bin].photo!.videoTimeSeconds = frame.time;
+        }
+      }
+      this.selectedSlotIdx = this.slots.find(slot => !slot.captured)?.index ?? 0;
+      this.refreshAllUI();
+      this.renderCurrentPreviewSlot();
+      cancelButton.hidden = true;
+      this.setCameraFeedback(this.t().videoSelected(result.frames.length));
+      if (evaluateCoverage(CAPTURE_PRESETS.video, this.slots, this.selectedSlotIdx, this.locale).isReadyToRender) {
+        await this.runReconstruction();
+      }
+    } catch (error) {
+      this.setCameraFeedback(controller.signal.aborted ? this.t().videoCancelled
+        : error instanceof VideoFrameError && error.code === 'duration' ? this.t().videoDurationError
+        : error instanceof VideoFrameError && error.code === 'no_frames' ? this.t().videoNoFrames
+        : this.t().videoDecodeError);
+    } finally {
+      cancelButton.hidden = true;
+      this.videoAbortController = null;
+      this.setBusy(false);
+    }
   }
 
   private captureSyntheticAt(slotIdx: number, advance = true): void {
@@ -1246,6 +1319,14 @@ class GuidedGSplatApp {
 
     const s = this.t();
     const preset = CAPTURE_PRESETS[this.presetId];
+    if (this.slots.some(slot => slot.photo?.source === 'real' && slot.photo.issues.some(issue => issue.code === 'background'))) {
+      this.setCameraFeedback(s.backgroundUnclear);
+      return;
+    }
+    if (this.presetId === 'video' && capturedCount < 6) {
+      this.setCameraFeedback(s.videoNeedMoreViews);
+      return;
+    }
     this.setBusy(true, s.busyReconTitle, '...', 10);
 
     this.invalidateCloud();
@@ -1262,7 +1343,8 @@ class GuidedGSplatApp {
       this.loadCloudIntoViewer(cloud);
     } catch (error) {
       this.setCameraFeedback(error instanceof ReconstructionError && error.code === 'foreground'
-        ? s.backgroundUnclear : s.reconstructionFailed);
+        ? s.backgroundUnclear : error instanceof ReconstructionError && error.code === 'views'
+          ? s.needMoreViews : s.reconstructionFailed);
       this.switchTab('capture');
       this.refreshAllUI();
       document.getElementById('camera-feedback')!.scrollIntoView({ block: 'center', behavior: 'smooth' });
